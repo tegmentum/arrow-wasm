@@ -1,0 +1,62 @@
+/// Arrow RecordBatch - a collection of equal-length arrays
+interface record-batch {
+    use types.{schema, field, arrow-error};
+    use arrays.{array};
+
+    /// A collection of equal-length arrays with a schema
+    resource record-batch {
+        /// Create a new record batch from schema and columns
+        constructor(schema: schema, columns: list<array>);
+
+        /// Try to create a new record batch, returning an error if validation fails
+        try-new: static func(schema: schema, columns: list<array>) -> result<record-batch, arrow-error>;
+
+        /// Get the schema
+        schema: func() -> schema;
+
+        /// Get a column by index
+        column: func(index: u32) -> option<array>;
+
+        /// Get a column by name
+        column-by-name: func(name: string) -> option<array>;
+
+        /// Get the number of columns
+        num-columns: func() -> u32;
+
+        /// Get the number of rows
+        num-rows: func() -> u64;
+
+        /// Slice the record batch
+        slice: func(offset: u64, length: u64) -> record-batch;
+
+        /// Project the record batch to specific columns by index
+        project: func(indices: list<u32>) -> result<record-batch, arrow-error>;
+
+        /// Get all columns
+        columns: func() -> list<array>;
+
+        /// Get the column names
+        column-names: func() -> list<string>;
+
+        /// Remove a column by index
+        remove-column: func(index: u32) -> result<record-batch, arrow-error>;
+
+        /// Get memory size in bytes
+        get-array-memory-size: func() -> u64;
+    }
+
+    /// Builder for creating record batches
+    resource record-batch-builder {
+        /// Create a new builder with the given schema
+        constructor(schema: schema);
+
+        /// Append a column
+        append-column: func(array: array) -> result<_, arrow-error>;
+
+        /// Build the record batch
+        finish: func() -> result<record-batch, arrow-error>;
+    }
+
+    /// Concatenate multiple record batches with the same schema
+    concat-batches: func(schema: schema, batches: list<record-batch>) -> result<record-batch, arrow-error>;
+}

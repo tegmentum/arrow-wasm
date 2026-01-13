@@ -1,0 +1,251 @@
+/// Arrow array types and operations
+interface arrays {
+    use types.{data-type, schema, field, arrow-error};
+
+    /// A generic Arrow array (type-erased)
+    resource array {
+        /// Get the data type of the array
+        data-type: func() -> data-type;
+
+        /// Get the number of elements
+        len: func() -> u64;
+
+        /// Check if the array is empty
+        is-empty: func() -> bool;
+
+        /// Get the number of null values
+        null-count: func() -> u64;
+
+        /// Check if a specific index is null
+        is-null: func(index: u64) -> bool;
+
+        /// Check if a specific index is valid (not null)
+        is-valid: func(index: u64) -> bool;
+
+        /// Slice the array
+        slice: func(offset: u64, length: u64) -> array;
+
+        /// Get the memory size in bytes
+        get-buffer-memory-size: func() -> u64;
+
+        /// Get the array memory size in bytes
+        get-array-memory-size: func() -> u64;
+    }
+
+    /// Builder for boolean arrays
+    resource boolean-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> boolean-array-builder;
+        append-value: func(value: bool);
+        append-null: func();
+        append-values: func(values: list<bool>, is-valid: list<bool>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for Int8 arrays
+    resource int8-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> int8-array-builder;
+        append-value: func(value: s8);
+        append-null: func();
+        append-values: func(values: list<s8>, is-valid: list<bool>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for Int16 arrays
+    resource int16-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> int16-array-builder;
+        append-value: func(value: s16);
+        append-null: func();
+        append-values: func(values: list<s16>, is-valid: list<bool>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for Int32 arrays
+    resource int32-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> int32-array-builder;
+        append-value: func(value: s32);
+        append-null: func();
+        append-values: func(values: list<s32>, is-valid: list<bool>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for Int64 arrays
+    resource int64-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> int64-array-builder;
+        append-value: func(value: s64);
+        append-null: func();
+        append-values: func(values: list<s64>, is-valid: list<bool>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for UInt8 arrays
+    resource uint8-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> uint8-array-builder;
+        append-value: func(value: u8);
+        append-null: func();
+        append-values: func(values: list<u8>, is-valid: list<bool>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for UInt16 arrays
+    resource uint16-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> uint16-array-builder;
+        append-value: func(value: u16);
+        append-null: func();
+        append-values: func(values: list<u16>, is-valid: list<bool>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for UInt32 arrays
+    resource uint32-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> uint32-array-builder;
+        append-value: func(value: u32);
+        append-null: func();
+        append-values: func(values: list<u32>, is-valid: list<bool>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for UInt64 arrays
+    resource uint64-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> uint64-array-builder;
+        append-value: func(value: u64);
+        append-null: func();
+        append-values: func(values: list<u64>, is-valid: list<bool>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for Float32 arrays
+    resource float32-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> float32-array-builder;
+        append-value: func(value: f32);
+        append-null: func();
+        append-values: func(values: list<f32>, is-valid: list<bool>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for Float64 arrays
+    resource float64-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> float64-array-builder;
+        append-value: func(value: f64);
+        append-null: func();
+        append-values: func(values: list<f64>, is-valid: list<bool>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for String arrays
+    resource string-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> string-array-builder;
+        append-value: func(value: string);
+        append-null: func();
+        append-option: func(value: option<string>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for Binary arrays
+    resource binary-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> binary-array-builder;
+        append-value: func(value: list<u8>);
+        append-null: func();
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Create an array from typed data
+    /// These functions provide convenient ways to create arrays from data
+
+    /// Create a boolean array from values
+    boolean-array-from: func(values: list<bool>) -> array;
+
+    /// Create an Int32 array from values
+    int32-array-from: func(values: list<s32>) -> array;
+
+    /// Create an Int64 array from values
+    int64-array-from: func(values: list<s64>) -> array;
+
+    /// Create a Float64 array from values
+    float64-array-from: func(values: list<f64>) -> array;
+
+    /// Create a String array from values
+    string-array-from: func(values: list<string>) -> array;
+
+    /// Create a nullable Int32 array
+    int32-array-from-nullable: func(values: list<option<s32>>) -> array;
+
+    /// Create a nullable Int64 array
+    int64-array-from-nullable: func(values: list<option<s64>>) -> array;
+
+    /// Create a nullable Float64 array
+    float64-array-from-nullable: func(values: list<option<f64>>) -> array;
+
+    /// Create a nullable String array
+    string-array-from-nullable: func(values: list<option<string>>) -> array;
+
+    /// Array accessor functions
+    /// Get values from arrays (returns error if wrong type or out of bounds)
+
+    /// Get a boolean value
+    get-boolean: func(arr: borrow<array>, index: u64) -> result<option<bool>, arrow-error>;
+
+    /// Get an Int8 value
+    get-int8: func(arr: borrow<array>, index: u64) -> result<option<s8>, arrow-error>;
+
+    /// Get an Int16 value
+    get-int16: func(arr: borrow<array>, index: u64) -> result<option<s16>, arrow-error>;
+
+    /// Get an Int32 value
+    get-int32: func(arr: borrow<array>, index: u64) -> result<option<s32>, arrow-error>;
+
+    /// Get an Int64 value
+    get-int64: func(arr: borrow<array>, index: u64) -> result<option<s64>, arrow-error>;
+
+    /// Get a UInt8 value
+    get-uint8: func(arr: borrow<array>, index: u64) -> result<option<u8>, arrow-error>;
+
+    /// Get a UInt16 value
+    get-uint16: func(arr: borrow<array>, index: u64) -> result<option<u16>, arrow-error>;
+
+    /// Get a UInt32 value
+    get-uint32: func(arr: borrow<array>, index: u64) -> result<option<u32>, arrow-error>;
+
+    /// Get a UInt64 value
+    get-uint64: func(arr: borrow<array>, index: u64) -> result<option<u64>, arrow-error>;
+
+    /// Get a Float32 value
+    get-float32: func(arr: borrow<array>, index: u64) -> result<option<f32>, arrow-error>;
+
+    /// Get a Float64 value
+    get-float64: func(arr: borrow<array>, index: u64) -> result<option<f64>, arrow-error>;
+
+    /// Get a String value
+    get-string: func(arr: borrow<array>, index: u64) -> result<option<string>, arrow-error>;
+
+    /// Get a Binary value
+    get-binary: func(arr: borrow<array>, index: u64) -> result<option<list<u8>>, arrow-error>;
+
+    /// Concatenate multiple arrays of the same type
+    concat: func(arrays: list<array>) -> result<array, arrow-error>;
+}

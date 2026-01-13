@@ -1,0 +1,173 @@
+/// Arrow I/O operations for various formats
+interface io {
+    use types.{schema, arrow-error, data-type};
+    use arrays.{array};
+    use record-batch.{record-batch};
+
+    /// Compression codec for Parquet (Wasm-compatible codecs only)
+    enum compression {
+        uncompressed,
+        snappy,
+        lz4,
+    }
+
+    /// IPC (Arrow) format options
+    record ipc-write-options {
+        /// Preserve dictionary encoding
+        preserve-dict-id: bool,
+    }
+
+    /// Parquet write options
+    record parquet-write-options {
+        /// Compression codec
+        compression: compression,
+        /// Row group size
+        max-row-group-size: option<u64>,
+        /// Enable dictionary encoding
+        dictionary-enabled: bool,
+        /// Enable statistics
+        write-statistics: bool,
+    }
+
+    /// CSV read options
+    record csv-read-options {
+        /// Has header row
+        has-header: bool,
+        /// Delimiter character (as byte)
+        delimiter: u8,
+        /// Quote character (as byte)
+        quote: option<u8>,
+        /// Escape character (as byte)
+        escape: option<u8>,
+        /// Maximum number of records to read
+        max-records: option<u64>,
+        /// Number of rows to infer schema from
+        schema-infer-max-records: option<u64>,
+    }
+
+    /// CSV write options
+    record csv-write-options {
+        /// Include header row
+        has-header: bool,
+        /// Delimiter character (as byte)
+        delimiter: u8,
+        /// Quote character (as byte)
+        quote: u8,
+        /// Date format string
+        date-format: option<string>,
+        /// Timestamp format string
+        timestamp-format: option<string>,
+    }
+
+    /// JSON read options
+    record json-read-options {
+        /// Maximum number of records to read
+        max-records: option<u64>,
+        /// Number of rows to infer schema from
+        schema-infer-max-records: option<u64>,
+    }
+
+    /// IPC (Arrow) Format I/O
+
+    /// Read schema from IPC stream data
+    ipc-read-schema: func(data: list<u8>) -> result<schema, arrow-error>;
+
+    /// Read record batches from IPC stream data
+    ipc-read-stream: func(data: list<u8>) -> result<list<record-batch>, arrow-error>;
+
+    /// Read a single record batch from IPC file data
+    ipc-read-file: func(data: list<u8>) -> result<list<record-batch>, arrow-error>;
+
+    /// Write record batches to IPC stream format
+    ipc-write-stream: func(batches: list<record-batch>, options: option<ipc-write-options>) -> result<list<u8>, arrow-error>;
+
+    /// Write record batches to IPC file format
+    ipc-write-file: func(batches: list<record-batch>, options: option<ipc-write-options>) -> result<list<u8>, arrow-error>;
+
+    /// Parquet Format I/O
+
+    /// Read schema from Parquet data
+    parquet-read-schema: func(data: list<u8>) -> result<schema, arrow-error>;
+
+    /// Get Parquet file metadata
+    parquet-metadata: func(data: list<u8>) -> result<parquet-file-metadata, arrow-error>;
+
+    /// Read all record batches from Parquet data
+    parquet-read: func(data: list<u8>) -> result<list<record-batch>, arrow-error>;
+
+    /// Read specific columns from Parquet data
+    parquet-read-columns: func(data: list<u8>, columns: list<string>) -> result<list<record-batch>, arrow-error>;
+
+    /// Read a range of row groups from Parquet data
+    parquet-read-row-groups: func(data: list<u8>, row-groups: list<u32>) -> result<list<record-batch>, arrow-error>;
+
+    /// Write record batches to Parquet format
+    parquet-write: func(batches: list<record-batch>, options: option<parquet-write-options>) -> result<list<u8>, arrow-error>;
+
+    /// Parquet file metadata
+    record parquet-file-metadata {
+        /// Number of rows in the file
+        num-rows: u64,
+        /// Number of row groups
+        num-row-groups: u32,
+        /// Created by string
+        created-by: option<string>,
+        /// Key-value metadata
+        key-value-metadata: list<tuple<string, string>>,
+    }
+
+    /// CSV Format I/O
+
+    /// Infer schema from CSV data
+    csv-infer-schema: func(data: list<u8>, options: csv-read-options) -> result<schema, arrow-error>;
+
+    /// Read CSV data into record batches
+    csv-read: func(data: list<u8>, options: csv-read-options) -> result<list<record-batch>, arrow-error>;
+
+    /// Read CSV data with a provided schema
+    csv-read-with-schema: func(data: list<u8>, schema: schema, options: csv-read-options) -> result<list<record-batch>, arrow-error>;
+
+    /// Write record batches to CSV format
+    csv-write: func(batches: list<record-batch>, options: csv-write-options) -> result<list<u8>, arrow-error>;
+
+    /// JSON Format I/O
+
+    /// Infer schema from JSON data
+    json-infer-schema: func(data: list<u8>, options: json-read-options) -> result<schema, arrow-error>;
+
+    /// Read JSON data into record batches
+    json-read: func(data: list<u8>, options: json-read-options) -> result<list<record-batch>, arrow-error>;
+
+    /// Read JSON data with a provided schema
+    json-read-with-schema: func(data: list<u8>, schema: schema, options: json-read-options) -> result<list<record-batch>, arrow-error>;
+
+    /// Write record batches to JSON format (newline-delimited JSON)
+    json-write: func(batches: list<record-batch>) -> result<list<u8>, arrow-error>;
+
+    /// Streaming readers for large files
+    /// These return iterators that yield record batches
+
+    /// A reader that yields record batches
+    resource batch-reader {
+        /// Get the schema
+        schema: func() -> schema;
+
+        /// Read the next batch
+        next: func() -> option<result<record-batch, arrow-error>>;
+
+        /// Collect all remaining batches
+        collect: func() -> result<list<record-batch>, arrow-error>;
+    }
+
+    /// Create a streaming IPC reader
+    ipc-stream-reader: func(data: list<u8>) -> result<batch-reader, arrow-error>;
+
+    /// Create a streaming Parquet reader
+    parquet-stream-reader: func(data: list<u8>) -> result<batch-reader, arrow-error>;
+
+    /// Create a streaming CSV reader
+    csv-stream-reader: func(data: list<u8>, options: csv-read-options) -> result<batch-reader, arrow-error>;
+
+    /// Create a streaming JSON reader
+    json-stream-reader: func(data: list<u8>, options: json-read-options) -> result<batch-reader, arrow-error>;
+}

@@ -1,0 +1,224 @@
+/// Arrow compute kernels
+interface compute {
+    use types.{arrow-error, data-type};
+    use arrays.{array};
+    use record-batch.{record-batch};
+
+    /// Sort order
+    enum sort-order {
+        ascending,
+        descending,
+    }
+
+    /// Null handling in sort
+    enum null-ordering {
+        nulls-first,
+        nulls-last,
+    }
+
+    /// Sort options
+    record sort-options {
+        descending: bool,
+        nulls-first: bool,
+    }
+
+    /// Comparison operators
+    enum comparison-op {
+        eq,
+        not-eq,
+        lt,
+        lt-eq,
+        gt,
+        gt-eq,
+    }
+
+    /// Arithmetic operations
+
+    /// Add two arrays element-wise
+    add: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Subtract two arrays element-wise
+    subtract: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Multiply two arrays element-wise
+    multiply: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Divide two arrays element-wise
+    divide: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Compute the remainder of division
+    modulo: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Negate an array element-wise
+    negate: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Add a scalar to an array
+    add-scalar-i64: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
+
+    /// Add a scalar to an array (float)
+    add-scalar-f64: func(arr: borrow<array>, scalar: f64) -> result<array, arrow-error>;
+
+    /// Multiply array by a scalar
+    multiply-scalar-i64: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
+
+    /// Multiply array by a scalar (float)
+    multiply-scalar-f64: func(arr: borrow<array>, scalar: f64) -> result<array, arrow-error>;
+
+    /// Comparison operations
+
+    /// Compare two arrays element-wise
+    compare: func(left: borrow<array>, right: borrow<array>, op: comparison-op) -> result<array, arrow-error>;
+
+    /// Compare array with an i64 scalar
+    compare-scalar-i64: func(arr: borrow<array>, scalar: s64, op: comparison-op) -> result<array, arrow-error>;
+
+    /// Compare array with an f64 scalar
+    compare-scalar-f64: func(arr: borrow<array>, scalar: f64, op: comparison-op) -> result<array, arrow-error>;
+
+    /// Compare array with a string scalar
+    compare-scalar-string: func(arr: borrow<array>, scalar: string, op: comparison-op) -> result<array, arrow-error>;
+
+    /// Boolean operations
+
+    /// Logical AND of two boolean arrays
+    and: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Logical OR of two boolean arrays
+    or: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Logical NOT of a boolean array
+    not: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if values are null
+    is-null: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if values are not null
+    is-not-null: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Aggregation operations
+
+    /// Sum of all values
+    sum-i64: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
+
+    /// Sum of all values (float)
+    sum-f64: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Minimum value
+    min-i64: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
+
+    /// Minimum value (float)
+    min-f64: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Minimum string value
+    min-string: func(arr: borrow<array>) -> result<option<string>, arrow-error>;
+
+    /// Maximum value
+    max-i64: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
+
+    /// Maximum value (float)
+    max-f64: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Maximum string value
+    max-string: func(arr: borrow<array>) -> result<option<string>, arrow-error>;
+
+    /// Count non-null values
+    count: func(arr: borrow<array>) -> u64;
+
+    /// Mean (average) of values
+    mean: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Selection and filtering
+
+    /// Filter an array based on a boolean mask
+    filter: func(arr: borrow<array>, predicate: borrow<array>) -> result<array, arrow-error>;
+
+    /// Filter a record batch based on a boolean mask
+    filter-record-batch: func(batch: borrow<record-batch>, predicate: borrow<array>) -> result<record-batch, arrow-error>;
+
+    /// Take values at specified indices
+    take: func(arr: borrow<array>, indices: borrow<array>) -> result<array, arrow-error>;
+
+    /// Take values from a record batch at specified indices
+    take-record-batch: func(batch: borrow<record-batch>, indices: borrow<array>) -> result<record-batch, arrow-error>;
+
+    /// Sorting
+
+    /// Get sort indices for an array
+    sort-indices: func(arr: borrow<array>, options: sort-options) -> result<array, arrow-error>;
+
+    /// Sort an array
+    sort: func(arr: borrow<array>, options: sort-options) -> result<array, arrow-error>;
+
+    /// Sort a record batch by specified columns
+    sort-record-batch: func(
+        batch: borrow<record-batch>,
+        sort-columns: list<tuple<string, sort-options>>
+    ) -> result<record-batch, arrow-error>;
+
+    /// Get lexicographic sort indices for multiple arrays
+    lexsort: func(arrays: list<array>, options: list<sort-options>) -> result<array, arrow-error>;
+
+    /// Limit/offset operations
+
+    /// Get the first n elements
+    limit: func(arr: borrow<array>, n: u64) -> array;
+
+    /// Skip the first n elements
+    skip: func(arr: borrow<array>, n: u64) -> array;
+
+    /// Casting
+
+    /// Cast an array to a different data type
+    cast: func(arr: borrow<array>, to-type: data-type) -> result<array, arrow-error>;
+
+    /// String operations
+
+    /// Get string length
+    string-length: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Convert to lowercase
+    string-lower: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Convert to uppercase
+    string-upper: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Trim whitespace from both ends
+    string-trim: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if string contains substring
+    string-contains: func(arr: borrow<array>, substring: string) -> result<array, arrow-error>;
+
+    /// Check if string starts with prefix
+    string-starts-with: func(arr: borrow<array>, prefix: string) -> result<array, arrow-error>;
+
+    /// Check if string ends with suffix
+    string-ends-with: func(arr: borrow<array>, suffix: string) -> result<array, arrow-error>;
+
+    /// Concatenate strings element-wise
+    string-concat: func(arrays: list<array>) -> result<array, arrow-error>;
+
+    /// Null handling
+
+    /// Fill null values with a scalar (int)
+    fill-null-i64: func(arr: borrow<array>, value: s64) -> result<array, arrow-error>;
+
+    /// Fill null values with a scalar (float)
+    fill-null-f64: func(arr: borrow<array>, value: f64) -> result<array, arrow-error>;
+
+    /// Fill null values with a scalar (string)
+    fill-null-string: func(arr: borrow<array>, value: string) -> result<array, arrow-error>;
+
+    /// Fill null values with a scalar (bool)
+    fill-null-bool: func(arr: borrow<array>, value: bool) -> result<array, arrow-error>;
+
+    /// Coalesce - return first non-null value from multiple arrays
+    coalesce: func(arrays: list<array>) -> result<array, arrow-error>;
+
+    /// Unique/distinct operations
+
+    /// Get unique values
+    unique: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get indices of first occurrence of each unique value
+    value-counts: func(arr: borrow<array>) -> result<record-batch, arrow-error>;
+}

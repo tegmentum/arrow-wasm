@@ -1,0 +1,10 @@
+package arrow:arrow-wasm@0.1.0;
+
+/// The main Arrow WebAssembly Component world
+world arrow-world {
+    export types;
+    export arrays;
+    export record-batch;
+    export compute;
+    export io;
+}

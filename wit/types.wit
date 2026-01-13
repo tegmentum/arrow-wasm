@@ -1,0 +1,199 @@
+/// Core Arrow type definitions
+interface types {
+    /// Time unit for temporal types
+    enum time-unit {
+        second,
+        millisecond,
+        microsecond,
+        nanosecond,
+    }
+
+    /// Interval unit
+    enum interval-unit {
+        year-month,
+        day-time,
+        month-day-nano,
+    }
+
+    /// Union mode
+    enum union-mode {
+        sparse,
+        dense,
+    }
+
+    /// Dictionary index type (simplified)
+    enum dict-index-type {
+        int8,
+        int16,
+        int32,
+        int64,
+        uint8,
+        uint16,
+        uint32,
+        uint64,
+    }
+
+    /// Dictionary value type (simplified for common cases)
+    enum dict-value-type {
+        utf8,
+        binary,
+        int32,
+        int64,
+    }
+
+    /// Handle to a field (used in recursive type definitions)
+    type field-handle = u32;
+
+    /// Arrow data types
+    variant data-type {
+        /// Null type - no data
+        null,
+        /// Boolean type
+        boolean,
+        /// Signed 8-bit integer
+        int8,
+        /// Signed 16-bit integer
+        int16,
+        /// Signed 32-bit integer
+        int32,
+        /// Signed 64-bit integer
+        int64,
+        /// Unsigned 8-bit integer
+        uint8,
+        /// Unsigned 16-bit integer
+        uint16,
+        /// Unsigned 32-bit integer
+        uint32,
+        /// Unsigned 64-bit integer
+        uint64,
+        /// 16-bit floating point
+        float16,
+        /// 32-bit floating point
+        float32,
+        /// 64-bit floating point
+        float64,
+        /// UTF-8 encoded string with 32-bit offsets
+        utf8,
+        /// UTF-8 encoded string with 64-bit offsets
+        large-utf8,
+        /// Binary data with 32-bit offsets
+        binary,
+        /// Binary data with 64-bit offsets
+        large-binary,
+        /// Fixed-size binary with given byte width
+        fixed-size-binary(s32),
+        /// Date with 32-bit representation (days since epoch)
+        date32,
+        /// Date with 64-bit representation (milliseconds since epoch)
+        date64,
+        /// Time with 32-bit representation
+        time32(time-unit),
+        /// Time with 64-bit representation
+        time64(time-unit),
+        /// Timestamp with timezone
+        timestamp(tuple<time-unit, option<string>>),
+        /// Duration
+        duration(time-unit),
+        /// Interval
+        interval(interval-unit),
+        /// Decimal128 with precision and scale
+        decimal128(tuple<u8, s8>),
+        /// Decimal256 with precision and scale
+        decimal256(tuple<u8, s8>),
+        /// List with element type (uses field-handle to avoid infinite recursion)
+        %list(field-handle),
+        /// Large list with 64-bit offsets
+        large-list(field-handle),
+        /// Fixed-size list with length and element type
+        fixed-size-list(tuple<s32, field-handle>),
+        /// Struct with fields
+        %struct(list<field-handle>),
+        /// Union type (fields, type-ids, mode)
+        %union(tuple<list<field-handle>, list<s8>, union-mode>),
+        /// Dictionary encoded type (index-type, value-type)
+        dictionary(tuple<dict-index-type, dict-value-type>),
+        /// Map type with entries field and sorted flag
+        map(tuple<field-handle, bool>),
+        /// Run-end encoded type (run-ends field, values field)
+        run-end-encoded(tuple<field-handle, field-handle>),
+        /// Binary view type
+        binary-view,
+        /// UTF8 view type
+        utf8-view,
+        /// List view type
+        list-view(field-handle),
+        /// Large list view type
+        large-list-view(field-handle),
+    }
+
+    /// Metadata as key-value pairs
+    type metadata = list<tuple<string, string>>;
+
+    /// A field in a schema
+    resource field {
+        /// Create a new field
+        constructor(name: string, data-type: data-type, nullable: bool);
+
+        /// Create a field with metadata
+        with-metadata: static func(name: string, data-type: data-type, nullable: bool, metadata: metadata) -> field;
+
+        /// Get the field name
+        name: func() -> string;
+
+        /// Get the data type
+        data-type: func() -> data-type;
+
+        /// Check if nullable
+        is-nullable: func() -> bool;
+
+        /// Get metadata
+        metadata: func() -> metadata;
+    }
+
+    /// Arrow schema
+    resource schema {
+        /// Create a new schema from fields
+        constructor(fields: list<field>);
+
+        /// Create a schema with metadata
+        with-metadata: static func(fields: list<field>, metadata: metadata) -> schema;
+
+        /// Get all fields
+        fields: func() -> list<field>;
+
+        /// Get field by index
+        field: func(index: u32) -> option<field>;
+
+        /// Get field by name
+        field-by-name: func(name: string) -> option<field>;
+
+        /// Get the number of fields
+        num-fields: func() -> u32;
+
+        /// Get schema metadata
+        metadata: func() -> metadata;
+
+        /// Get field index by name
+        index-of: func(name: string) -> option<u32>;
+    }
+
+    /// Error type for Arrow operations
+    variant arrow-error {
+        /// Invalid argument provided
+        invalid-argument(string),
+        /// I/O error
+        io-error(string),
+        /// Schema mismatch
+        schema-mismatch(string),
+        /// Out of bounds access
+        out-of-bounds(string),
+        /// Compute error
+        compute-error(string),
+        /// Parse error
+        parse-error(string),
+        /// Not implemented
+        not-implemented(string),
+        /// Generic error
+        other(string),
+    }
+}

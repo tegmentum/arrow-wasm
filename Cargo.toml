@@ -1,0 +1,55 @@
+[package]
+name = "arrow-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Apache Arrow as a WebAssembly Component"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Core Arrow crates
+arrow = { version = "57.2", default-features = false, features = [
+    "ipc",
+    "json",
+    "csv",
+] }
+arrow-array = { version = "57.2", default-features = false }
+arrow-buffer = { version = "57.2", default-features = false }
+arrow-cast = { version = "57.2", default-features = false }
+arrow-data = { version = "57.2", default-features = false }
+arrow-ipc = { version = "57.2", default-features = false }
+arrow-json = { version = "57.2", default-features = false }
+arrow-csv = { version = "57.2", default-features = false }
+arrow-ord = { version = "57.2", default-features = false }
+arrow-row = { version = "57.2", default-features = false }
+arrow-schema = { version = "57.2", default-features = false }
+arrow-select = { version = "57.2", default-features = false }
+arrow-string = { version = "57.2", default-features = false }
+arrow-arith = { version = "57.2", default-features = false }
+
+# Parquet support - only pure Rust compression codecs
+parquet = { version = "57.2", default-features = false, features = [
+    "arrow",
+    "snap",      # Pure Rust snappy implementation
+    "lz4",       # Uses lz4_flex which is pure Rust
+] }
+
+# Bytes for Parquet ChunkReader
+bytes = "1.5"
+
+# Component model bindings
+wit-bindgen = "0.41"
+wit-bindgen-rt = "0.41"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+
+[package.metadata.component]
+package = "arrow:arrow-wasm"
+
+[package.metadata.component.dependencies]
