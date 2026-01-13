@@ -52,6 +52,20 @@ interface compute {
     /// Negate an array element-wise
     negate: func(arr: borrow<array>) -> result<array, arrow-error>;
 
+    /// ========== Wrapping Arithmetic (no overflow errors) ==========
+
+    /// Add two arrays with wrapping on overflow (integers only)
+    add-wrapping: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Subtract two arrays with wrapping on overflow (integers only)
+    subtract-wrapping: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Multiply two arrays with wrapping on overflow (integers only)
+    multiply-wrapping: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Negate an array with wrapping on overflow (integers only)
+    negate-wrapping: func(arr: borrow<array>) -> result<array, arrow-error>;
+
     /// Add a scalar to an array
     add-scalar-i64: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
 
@@ -78,6 +92,20 @@ interface compute {
     /// Compare array with a string scalar
     compare-scalar-string: func(arr: borrow<array>, scalar: string, op: comparison-op) -> result<array, arrow-error>;
 
+    /// Check if values are distinct (NULL-safe: NULL is considered equal to NULL)
+    distinct: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if values are not distinct (NULL-safe: NULL equals NULL returns false)
+    not-distinct: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== List Membership ==========
+
+    /// Check if integer values are in the provided list
+    in-list-i64: func(arr: borrow<array>, values: list<s64>) -> result<array, arrow-error>;
+
+    /// Check if string values are in the provided list
+    in-list-string: func(arr: borrow<array>, values: list<string>) -> result<array, arrow-error>;
+
     /// Boolean operations
 
     /// Logical AND of two boolean arrays
@@ -89,11 +117,52 @@ interface compute {
     /// Logical NOT of a boolean array
     not: func(arr: borrow<array>) -> result<array, arrow-error>;
 
+    /// Boolean AND NOT (left AND (NOT right))
+    and-not: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Three-valued AND (SQL NULL semantics: NULL AND TRUE = NULL, NULL AND FALSE = FALSE)
+    and-kleene: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Three-valued OR (SQL NULL semantics: NULL OR TRUE = TRUE, NULL OR FALSE = NULL)
+    or-kleene: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
     /// Check if values are null
     is-null: func(arr: borrow<array>) -> result<array, arrow-error>;
 
     /// Check if values are not null
     is-not-null: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Bitwise Operations ==========
+
+    /// Bitwise AND of two integer arrays
+    bitwise-and: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Bitwise OR of two integer arrays
+    bitwise-or: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Bitwise XOR of two integer arrays
+    bitwise-xor: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Bitwise NOT of an integer array
+    bitwise-not: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Bitwise AND NOT (left AND (NOT right))
+    bitwise-and-not: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Left shift array values by n bits
+    bitwise-shift-left: func(arr: borrow<array>, n: u32) -> result<array, arrow-error>;
+
+    /// Right shift array values by n bits
+    bitwise-shift-right: func(arr: borrow<array>, n: u32) -> result<array, arrow-error>;
+
+    /// Bitwise AND with scalar
+    bitwise-and-scalar: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
+
+    /// Bitwise OR with scalar
+    bitwise-or-scalar: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
+
+    /// Bitwise XOR with scalar
+    bitwise-xor-scalar: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
 
     /// Aggregation operations
 
@@ -120,6 +189,12 @@ interface compute {
 
     /// Maximum string value
     max-string: func(arr: borrow<array>) -> result<option<string>, arrow-error>;
+
+    /// Minimum binary value
+    min-binary: func(arr: borrow<array>) -> result<option<list<u8>>, arrow-error>;
+
+    /// Maximum binary value
+    max-binary: func(arr: borrow<array>) -> result<option<list<u8>>, arrow-error>;
 
     /// Count non-null values
     count: func(arr: borrow<array>) -> u64;
@@ -166,6 +241,9 @@ interface compute {
     /// Skip the first n elements
     skip: func(arr: borrow<array>, n: u64) -> array;
 
+    /// Shift array elements by offset (positive = shift right with nulls, negative = shift left with nulls)
+    shift: func(arr: borrow<array>, offset: s64) -> result<array, arrow-error>;
+
     /// Casting
 
     /// Cast an array to a different data type
@@ -175,6 +253,9 @@ interface compute {
 
     /// Get string length
     string-length: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get bit length of string/binary data
+    bit-length: func(arr: borrow<array>) -> result<array, arrow-error>;
 
     /// Convert to lowercase
     string-lower: func(arr: borrow<array>) -> result<array, arrow-error>;
@@ -197,6 +278,24 @@ interface compute {
     /// Concatenate strings element-wise
     string-concat: func(arrays: list<array>) -> result<array, arrow-error>;
 
+    /// Concatenate corresponding elements of two string arrays (a[i] + b[i])
+    concat-elements: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract substring from start position with optional length
+    substring: func(arr: borrow<array>, start: s64, length: option<s64>) -> result<array, arrow-error>;
+
+    /// SQL LIKE pattern matching (% and _ wildcards)
+    string-like: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// Case-insensitive SQL LIKE pattern matching
+    string-ilike: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// SQL NOT LIKE pattern matching
+    string-nlike: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// Case-insensitive SQL NOT LIKE pattern matching
+    string-nilike: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
     /// Null handling
 
     /// Fill null values with a scalar (int)
@@ -214,6 +313,32 @@ interface compute {
     /// Coalesce - return first non-null value from multiple arrays
     coalesce: func(arrays: list<array>) -> result<array, arrow-error>;
 
+    /// Set values to null where condition is true
+    nullif: func(arr: borrow<array>, condition: borrow<array>) -> result<array, arrow-error>;
+
+    /// Select values based on condition (if condition then truthy else falsy)
+    if-else: func(condition: borrow<array>, truthy: borrow<array>, falsy: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Array Operations ==========
+
+    /// Concatenate multiple arrays into one
+    concat: func(arrays: list<array>) -> result<array, arrow-error>;
+
+    /// Concatenate multiple record batches into one
+    concat-batches: func(batches: list<record-batch>) -> result<record-batch, arrow-error>;
+
+    /// Interleave arrays based on indices (merge arrays by selecting elements)
+    interleave: func(arrays: list<array>, indices: list<tuple<u32, u32>>) -> result<array, arrow-error>;
+
+    /// ========== Partitioning Operations ==========
+
+    /// Partition data into groups of consecutive equal values
+    /// Returns list of (start, length) pairs for each partition
+    partition: func(arrays: list<array>) -> result<list<tuple<u64, u64>>, arrow-error>;
+
+    /// Compute rank of each value in an array
+    rank: func(arr: borrow<array>, options: sort-options) -> result<array, arrow-error>;
+
     /// Unique/distinct operations
 
     /// Get unique values
@@ -221,4 +346,185 @@ interface compute {
 
     /// Get indices of first occurrence of each unique value
     value-counts: func(arr: borrow<array>) -> result<record-batch, arrow-error>;
+
+    /// ========== Date/Time Operations ==========
+
+    /// Extract year from date/timestamp
+    date-year: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract month from date/timestamp (1-12)
+    date-month: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract day of month from date/timestamp (1-31)
+    date-day: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract day of week from date/timestamp (0=Sunday, 6=Saturday)
+    date-day-of-week: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract day of year from date/timestamp (1-366)
+    date-day-of-year: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract ISO week number from date/timestamp (1-53)
+    date-week: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract quarter from date/timestamp (1-4)
+    date-quarter: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract hour from time/timestamp (0-23)
+    time-hour: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract minute from time/timestamp (0-59)
+    time-minute: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract second from time/timestamp (0-59)
+    time-second: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract millisecond from time/timestamp (0-999)
+    time-millisecond: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract microsecond from time/timestamp (0-999999)
+    time-microsecond: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract nanosecond from time/timestamp (0-999999999)
+    time-nanosecond: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Add interval to date/timestamp
+    date-add-days: func(arr: borrow<array>, days: s32) -> result<array, arrow-error>;
+
+    /// Add months to date/timestamp
+    date-add-months: func(arr: borrow<array>, months: s32) -> result<array, arrow-error>;
+
+    /// Add years to date/timestamp
+    date-add-years: func(arr: borrow<array>, years: s32) -> result<array, arrow-error>;
+
+    /// Difference between two date/timestamp arrays in days
+    date-diff-days: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Truncate timestamp to specified unit
+    timestamp-truncate: func(arr: borrow<array>, unit: string) -> result<array, arrow-error>;
+
+    /// ========== Regex String Operations ==========
+
+    /// Check if string matches regex pattern
+    regex-match: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// Extract first regex match
+    regex-extract: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// Extract regex match with capture group
+    regex-extract-group: func(arr: borrow<array>, pattern: string, group: u32) -> result<array, arrow-error>;
+
+    /// Replace first regex match
+    regex-replace: func(arr: borrow<array>, pattern: string, replacement: string) -> result<array, arrow-error>;
+
+    /// Replace all regex matches
+    regex-replace-all: func(arr: borrow<array>, pattern: string, replacement: string) -> result<array, arrow-error>;
+
+    /// Count regex matches
+    regex-count: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// Split string by regex pattern
+    regex-split: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// ========== Base64 Operations ==========
+
+    /// Encode binary array to base64 string (standard encoding)
+    b64-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Decode base64 string array to binary
+    b64-decode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Window Functions ==========
+
+    /// Window function frame specification
+    record window-frame {
+        /// Start offset (negative = preceding, positive = following, 0 = current)
+        start-offset: s64,
+        /// End offset (negative = preceding, positive = following, 0 = current)
+        end-offset: s64,
+        /// Use unbounded start
+        unbounded-start: bool,
+        /// Use unbounded end
+        unbounded-end: bool,
+    }
+
+    /// Row number window function
+    window-row-number: func(partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>) -> result<array, arrow-error>;
+
+    /// Rank window function (with gaps)
+    window-rank: func(partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>) -> result<array, arrow-error>;
+
+    /// Dense rank window function (without gaps)
+    window-dense-rank: func(partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>) -> result<array, arrow-error>;
+
+    /// Percent rank window function
+    window-percent-rank: func(partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>) -> result<array, arrow-error>;
+
+    /// Cumulative distribution window function
+    window-cume-dist: func(partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>) -> result<array, arrow-error>;
+
+    /// N-tile window function
+    window-ntile: func(partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, n: u32) -> result<array, arrow-error>;
+
+    /// Lead window function (next row value)
+    window-lead: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, offset: u32, default-value: option<s64>) -> result<array, arrow-error>;
+
+    /// Lag window function (previous row value)
+    window-lag: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, offset: u32, default-value: option<s64>) -> result<array, arrow-error>;
+
+    /// First value in window
+    window-first-value: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
+
+    /// Last value in window
+    window-last-value: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
+
+    /// Nth value in window
+    window-nth-value: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, n: u32, frame: option<window-frame>) -> result<array, arrow-error>;
+
+    /// Running sum over window
+    window-sum: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
+
+    /// Running average over window
+    window-avg: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
+
+    /// Running min over window
+    window-min: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
+
+    /// Running max over window
+    window-max: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
+
+    /// Running count over window
+    window-count: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
+
+    /// ========== Additional Aggregations ==========
+
+    /// Variance (sample)
+    variance: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Variance (population)
+    variance-pop: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Standard deviation (sample)
+    stddev: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Standard deviation (population)
+    stddev-pop: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Median
+    median: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Approximate percentile
+    percentile: func(arr: borrow<array>, percentile: f64) -> result<option<f64>, arrow-error>;
+
+    /// Boolean any (true if any value is true)
+    bool-any: func(arr: borrow<array>) -> result<bool, arrow-error>;
+
+    /// Boolean all (true if all values are true)
+    bool-all: func(arr: borrow<array>) -> result<bool, arrow-error>;
+
+    /// First non-null value
+    first-value: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Last non-null value
+    last-value: func(arr: borrow<array>) -> result<array, arrow-error>;
 }

@@ -4,12 +4,29 @@ interface io {
     use arrays.{array};
     use record-batch.{record-batch};
 
-    /// Compression codec for Parquet (Wasm-compatible codecs only)
+    /// Compression codec for Parquet
+    /// Extended codecs (zstd, gzip, bzip2, lzma) require compression-multiplexer import
     enum compression {
+        /// No compression
         uncompressed,
+        /// Snappy compression (built-in, pure Rust)
         snappy,
+        /// LZ4 compression (built-in, pure Rust)
         lz4,
+        /// Zstandard compression (via compression-multiplexer)
+        zstd,
+        /// GZIP/DEFLATE compression (via compression-multiplexer)
+        gzip,
+        /// BZIP2 compression (via compression-multiplexer)
+        bzip2,
+        /// LZMA compression (via compression-multiplexer)
+        lzma,
     }
+
+    /// Compression level (0-9)
+    /// 0 = fastest/no compression, 9 = maximum compression
+    /// Default is typically 6 for balanced performance
+    type compression-level = u8;
 
     /// IPC (Arrow) format options
     record ipc-write-options {
@@ -21,6 +38,8 @@ interface io {
     record parquet-write-options {
         /// Compression codec
         compression: compression,
+        /// Compression level (0-9, default 6)
+        compression-level: option<compression-level>,
         /// Row group size
         max-row-group-size: option<u64>,
         /// Enable dictionary encoding
@@ -143,6 +162,14 @@ interface io {
 
     /// Write record batches to JSON format (newline-delimited JSON)
     json-write: func(batches: list<record-batch>) -> result<list<u8>, arrow-error>;
+
+    /// Avro Format I/O
+
+    /// Read Avro data into record batches
+    avro-read: func(data: list<u8>) -> result<list<record-batch>, arrow-error>;
+
+    /// Infer schema from Avro data
+    avro-infer-schema: func(data: list<u8>) -> result<schema, arrow-error>;
 
     /// Streaming readers for large files
     /// These return iterators that yield record batches

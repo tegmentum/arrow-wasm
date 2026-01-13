@@ -1,0 +1,12 @@
+package tegmentum:compression-multiplexer@0.1.0;
+
+world compression-multiplexer {
+    // TODO: Once Component Model supports named imports, import each algorithm:
+    // import deflate: tegmentum:compression-algorithm/compression-provider;
+    // import bzip2: tegmentum:compression-algorithm/compression-provider;
+    // import lzma: tegmentum:compression-algorithm/compression-provider;
+    // import zstd: tegmentum:compression-algorithm/compression-provider;
+
+    // Export unified dispatcher
+    export compression-dispatcher;
+}

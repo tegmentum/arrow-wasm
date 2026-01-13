@@ -28,6 +28,7 @@ arrow-schema = { version = "57.2", default-features = false }
 arrow-select = { version = "57.2", default-features = false }
 arrow-string = { version = "57.2", default-features = false }
 arrow-arith = { version = "57.2", default-features = false }
+arrow-avro = { version = "57.2", default-features = false }
 
 # Parquet support - only pure Rust compression codecs
 parquet = { version = "57.2", default-features = false, features = [
@@ -38,6 +39,12 @@ parquet = { version = "57.2", default-features = false, features = [
 
 # Bytes for Parquet ChunkReader
 bytes = "1.5"
+
+# Base64 encoding/decoding
+base64 = "0.22"
+
+# Regex support for string operations
+regex = "1.10"
 
 # Component model bindings (compatible with Wasmtime 40.x)
 wit-bindgen = "0.51"
@@ -52,4 +59,5 @@ strip = true
 [package.metadata.component]
 package = "arrow:arrow-wasm"
 
-[package.metadata.component.dependencies]
+[package.metadata.component.target.dependencies]
+"tegmentum:compression-multiplexer" = { path = "wit/deps/compression-multiplexer" }

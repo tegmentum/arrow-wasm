@@ -1,0 +1,150 @@
+/// Arrow Flight data exchange interface
+///
+/// This interface provides Flight-like data exchange semantics for Arrow data.
+/// The actual gRPC transport is handled by the host; this component handles
+/// encoding/decoding of Flight messages.
+interface flight {
+    use types.{schema, arrow-error};
+    use record-batch.{record-batch};
+
+    /// Flight descriptor type
+    enum descriptor-type {
+        /// Unknown descriptor type
+        unknown,
+        /// Named path descriptor
+        path,
+        /// Opaque command descriptor
+        cmd,
+    }
+
+    /// Flight descriptor - identifies a dataset
+    record flight-descriptor {
+        /// Descriptor type
+        %type: descriptor-type,
+        /// Command (for cmd type)
+        cmd: option<list<u8>>,
+        /// Path components (for path type)
+        path: list<string>,
+    }
+
+    /// Flight endpoint - location to retrieve data
+    record flight-endpoint {
+        /// Ticket to retrieve the data
+        ticket: list<u8>,
+        /// Locations where the data can be retrieved (URIs)
+        locations: list<string>,
+        /// Expiration time (Unix timestamp in seconds, 0 = no expiration)
+        expiration-time: u64,
+        /// Application-specific metadata
+        app-metadata: list<u8>,
+    }
+
+    /// Flight info - metadata about a flight
+    record flight-info {
+        /// Schema of the data (IPC-encoded)
+        schema-bytes: list<u8>,
+        /// Parsed schema
+        schema: option<schema>,
+        /// Flight descriptor
+        descriptor: option<flight-descriptor>,
+        /// Endpoints to retrieve data
+        endpoints: list<flight-endpoint>,
+        /// Total number of records (-1 if unknown)
+        total-records: s64,
+        /// Total bytes (-1 if unknown)
+        total-bytes: s64,
+        /// Whether data is ordered
+        ordered: bool,
+        /// Application-specific metadata
+        app-metadata: list<u8>,
+    }
+
+    /// Flight data - a batch of data in flight format
+    record flight-data {
+        /// Flight descriptor (optional, usually only on first message)
+        descriptor: option<flight-descriptor>,
+        /// IPC data header
+        data-header: list<u8>,
+        /// Application-specific metadata
+        app-metadata: list<u8>,
+        /// IPC data body
+        data-body: list<u8>,
+    }
+
+    /// Poll info - status of a long-running query
+    record poll-info {
+        /// Flight info (if available)
+        info: option<flight-info>,
+        /// Flight descriptor for polling
+        descriptor: option<flight-descriptor>,
+        /// Progress (0.0 to 1.0, -1 if unknown)
+        progress: option<f64>,
+        /// Expiration time for this poll info
+        expiration-time: u64,
+    }
+
+    /// Action type - describes an available action
+    record action-type {
+        /// Action name
+        %type: string,
+        /// Description
+        description: string,
+    }
+
+    /// Action - a service-specific operation
+    record action {
+        /// Action type
+        %type: string,
+        /// Action body
+        body: list<u8>,
+    }
+
+    /// Action result
+    record action-result {
+        /// Result body
+        body: list<u8>,
+    }
+
+    /// Encode a record batch to FlightData format
+    encode-batch: func(batch: record-batch, schema: schema) -> result<flight-data, arrow-error>;
+
+    /// Encode multiple record batches to FlightData stream
+    /// First message includes schema, subsequent messages are data only
+    encode-batches: func(batches: list<record-batch>, schema: schema) -> result<list<flight-data>, arrow-error>;
+
+    /// Decode FlightData to a record batch
+    decode-batch: func(data: flight-data, schema: schema) -> result<record-batch, arrow-error>;
+
+    /// Decode FlightData stream to record batches
+    decode-batches: func(data: list<flight-data>) -> result<list<record-batch>, arrow-error>;
+
+    /// Extract schema from FlightInfo
+    extract-schema: func(info: flight-info) -> result<schema, arrow-error>;
+
+    /// Create FlightInfo from schema and optional metadata
+    create-flight-info: func(
+        schema: schema,
+        descriptor: option<flight-descriptor>,
+        endpoints: list<flight-endpoint>,
+        total-records: s64,
+        total-bytes: s64
+    ) -> result<flight-info, arrow-error>;
+
+    /// Create a path-based FlightDescriptor
+    create-path-descriptor: func(path: list<string>) -> flight-descriptor;
+
+    /// Create a command-based FlightDescriptor
+    create-cmd-descriptor: func(cmd: list<u8>) -> flight-descriptor;
+
+    /// Serialize FlightInfo to bytes (for transport)
+    serialize-flight-info: func(info: flight-info) -> result<list<u8>, arrow-error>;
+
+    /// Deserialize FlightInfo from bytes
+    deserialize-flight-info: func(data: list<u8>) -> result<flight-info, arrow-error>;
+
+    /// Serialize FlightData to bytes (for transport)
+    serialize-flight-data: func(data: flight-data) -> result<list<u8>, arrow-error>;
+
+    /// Deserialize FlightData from bytes
+    deserialize-flight-data: func(data: list<u8>) -> result<flight-data, arrow-error>;
+}

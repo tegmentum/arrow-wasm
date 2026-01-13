@@ -2,9 +2,14 @@ package arrow:arrow-wasm@0.1.0;
 
 /// The main Arrow WebAssembly Component world
 world arrow-world {
+    /// Import compression dispatcher for extended codec support
+    import tegmentum:compression-multiplexer/compression-dispatcher@0.1.0;
+
+    /// Core Arrow functionality
     export types;
     export arrays;
     export record-batch;
     export compute;
     export io;
+    export flight;
 }
