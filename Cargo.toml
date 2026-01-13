@@ -39,9 +39,9 @@ parquet = { version = "57.2", default-features = false, features = [
 # Bytes for Parquet ChunkReader
 bytes = "1.5"
 
-# Component model bindings
-wit-bindgen = "0.41"
-wit-bindgen-rt = "0.41"
+# Component model bindings (compatible with Wasmtime 40.x)
+wit-bindgen = "0.51"
+wit-bindgen-rt = "0.44"
 
 [profile.release]
 opt-level = "s"
