@@ -248,4 +248,18 @@ interface arrays {
 
     /// Concatenate multiple arrays of the same type
     concat: func(arrays: list<array>) -> result<array, arrow-error>;
+
+    /// ========== Dictionary Array Operations ==========
+
+    /// Encode an array as dictionary-encoded (returns original if already dictionary-encoded)
+    dictionary-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Decode a dictionary-encoded array to its plain form
+    dictionary-decode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get the keys array from a dictionary-encoded array
+    dictionary-keys: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get the values (dictionary) array from a dictionary-encoded array
+    dictionary-values: func(arr: borrow<array>) -> result<array, arrow-error>;
 }

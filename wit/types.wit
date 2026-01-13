@@ -196,4 +196,25 @@ interface types {
         /// Generic error
         other(string),
     }
+
+    /// Builder for constructing schemas incrementally
+    resource schema-builder {
+        /// Create a new empty schema builder
+        constructor();
+
+        /// Add a field to the schema
+        add-field: func(name: string, data-type: data-type, nullable: bool);
+
+        /// Add a field with metadata to the schema
+        add-field-with-metadata: func(name: string, data-type: data-type, nullable: bool, metadata: metadata);
+
+        /// Set schema-level metadata
+        set-metadata: func(key: string, value: string);
+
+        /// Build the schema (consumes the builder)
+        build: func() -> schema;
+
+        /// Get the current number of fields
+        num-fields: func() -> u32;
+    }
 }

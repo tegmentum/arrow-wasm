@@ -59,4 +59,28 @@ interface record-batch {
 
     /// Concatenate multiple record batches with the same schema
     concat-batches: func(schema: schema, batches: list<record-batch>) -> result<record-batch, arrow-error>;
+
+    /// ========== Batch Validation ==========
+
+    /// Validation error information
+    record validation-error {
+        /// Column index where the error occurred
+        column-index: u32,
+        /// Column name where the error occurred
+        column-name: string,
+        /// Row index where the error occurred (if applicable)
+        row-index: option<u64>,
+        /// Type of error
+        error-type: string,
+        /// Detailed error message
+        message: string,
+    }
+
+    /// Validate a record batch against its own schema
+    /// Returns a list of validation errors (empty list means valid)
+    validate-batch: func(batch: borrow<record-batch>) -> list<validation-error>;
+
+    /// Validate a record batch against a specific schema
+    /// Returns a list of validation errors (empty list means valid)
+    validate-batch-schema: func(batch: borrow<record-batch>, expected-schema: borrow<schema>) -> list<validation-error>;
 }

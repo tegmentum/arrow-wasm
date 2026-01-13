@@ -135,6 +135,37 @@ interface io {
         key-value-metadata: list<tuple<string, string>>,
     }
 
+    /// Parquet row group metadata
+    record parquet-row-group-metadata {
+        /// Number of rows in this row group
+        num-rows: u64,
+        /// Total byte size of this row group
+        total-byte-size: u64,
+        /// Number of columns
+        column-count: u32,
+    }
+
+    /// Parquet column statistics
+    record parquet-column-statistics {
+        /// Number of null values
+        null-count: option<u64>,
+        /// Number of distinct values (if available)
+        distinct-count: option<u64>,
+        /// Minimum value (encoded as bytes)
+        min-value: option<list<u8>>,
+        /// Maximum value (encoded as bytes)
+        max-value: option<list<u8>>,
+    }
+
+    /// Get the number of row groups in a Parquet file
+    parquet-row-group-count: func(data: list<u8>) -> result<u32, arrow-error>;
+
+    /// Get metadata for a specific row group
+    parquet-get-row-group-metadata: func(data: list<u8>, row-group: u32) -> result<parquet-row-group-metadata, arrow-error>;
+
+    /// Get statistics for a specific column in a row group
+    parquet-get-column-statistics: func(data: list<u8>, row-group: u32, column: u32) -> result<parquet-column-statistics, arrow-error>;
+
     /// CSV Format I/O
 
     /// Infer schema from CSV data
@@ -170,6 +201,9 @@ interface io {
 
     /// Infer schema from Avro data
     avro-infer-schema: func(data: list<u8>) -> result<schema, arrow-error>;
+
+    /// Write record batches to Avro format
+    avro-write: func(batches: list<record-batch>) -> result<list<u8>, arrow-error>;
 
     /// Streaming readers for large files
     /// These return iterators that yield record batches

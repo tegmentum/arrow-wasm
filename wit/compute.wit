@@ -78,6 +78,29 @@ interface compute {
     /// Multiply array by a scalar (float)
     multiply-scalar-f64: func(arr: borrow<array>, scalar: f64) -> result<array, arrow-error>;
 
+    /// Subtract a scalar from an array
+    subtract-scalar-i64: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
+
+    /// Subtract a scalar from an array (float)
+    subtract-scalar-f64: func(arr: borrow<array>, scalar: f64) -> result<array, arrow-error>;
+
+    /// Divide array by a scalar
+    divide-scalar-i64: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
+
+    /// Divide array by a scalar (float)
+    divide-scalar-f64: func(arr: borrow<array>, scalar: f64) -> result<array, arrow-error>;
+
+    /// Modulo array by a scalar
+    modulo-scalar-i64: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
+
+    /// ========== Decimal Operations ==========
+
+    /// Multiply two decimal arrays with specified result precision and scale
+    multiply-decimal: func(left: borrow<array>, right: borrow<array>, result-precision: u8, result-scale: s8) -> result<array, arrow-error>;
+
+    /// Divide two decimal arrays with specified result precision and scale
+    divide-decimal: func(left: borrow<array>, right: borrow<array>, result-precision: u8, result-scale: s8) -> result<array, arrow-error>;
+
     /// Comparison operations
 
     /// Compare two arrays element-wise
@@ -233,6 +256,12 @@ interface compute {
     /// Get lexicographic sort indices for multiple arrays
     lexsort: func(arrays: list<array>, options: list<sort-options>) -> result<array, arrow-error>;
 
+    /// Sort an array and return only the first n elements (top-k)
+    sort-limit: func(arr: borrow<array>, options: sort-options, limit: u64) -> result<array, arrow-error>;
+
+    /// Get sort indices for an array, limited to first n (top-k indices)
+    sort-indices-limit: func(arr: borrow<array>, options: sort-options, limit: u64) -> result<array, arrow-error>;
+
     /// Limit/offset operations
 
     /// Get the first n elements
@@ -296,6 +325,50 @@ interface compute {
     /// Case-insensitive SQL NOT LIKE pattern matching
     string-nilike: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
 
+    /// Left-pad string to specified length with fill character
+    string-lpad: func(arr: borrow<array>, length: u64, fill: string) -> result<array, arrow-error>;
+
+    /// Right-pad string to specified length with fill character
+    string-rpad: func(arr: borrow<array>, length: u64, fill: string) -> result<array, arrow-error>;
+
+    /// Trim characters from the left side of strings
+    string-ltrim: func(arr: borrow<array>, chars: option<string>) -> result<array, arrow-error>;
+
+    /// Trim characters from the right side of strings
+    string-rtrim: func(arr: borrow<array>, chars: option<string>) -> result<array, arrow-error>;
+
+    /// Repeat each string n times
+    string-repeat: func(arr: borrow<array>, count: u64) -> result<array, arrow-error>;
+
+    /// Reverse the characters in each string
+    string-reverse: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get the ASCII value of the first character in each string
+    string-ascii: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Replace occurrences of a pattern with a replacement string
+    string-replace: func(arr: borrow<array>, pattern: string, replacement: string) -> result<array, arrow-error>;
+
+    /// Split strings on a delimiter (returns list array)
+    string-split: func(arr: borrow<array>, delimiter: string) -> result<array, arrow-error>;
+
+    /// ========== Array Generation ==========
+
+    /// Create an Int64 array with values from start to end (exclusive) with step
+    make-array-i64: func(start: s64, end: s64, step: s64) -> result<array, arrow-error>;
+
+    /// Create an array filled with a repeated Int64 value
+    array-fill-i64: func(value: s64, length: u64) -> array;
+
+    /// Create an array filled with a repeated Float64 value
+    array-fill-f64: func(value: f64, length: u64) -> array;
+
+    /// Create an array filled with a repeated string value
+    array-fill-string: func(value: string, length: u64) -> array;
+
+    /// Create an array filled with null values of the specified type
+    array-fill-null: func(data-type: data-type, length: u64) -> result<array, arrow-error>;
+
     /// Null handling
 
     /// Fill null values with a scalar (int)
@@ -329,6 +402,12 @@ interface compute {
 
     /// Interleave arrays based on indices (merge arrays by selecting elements)
     interleave: func(arrays: list<array>, indices: list<tuple<u32, u32>>) -> result<array, arrow-error>;
+
+    /// Reverse an array (flip element order)
+    reverse: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Repeat array elements n times (tile the array)
+    repeat: func(arr: borrow<array>, count: u64) -> result<array, arrow-error>;
 
     /// ========== Partitioning Operations ==========
 
