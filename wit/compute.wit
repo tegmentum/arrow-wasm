@@ -101,6 +101,85 @@ interface compute {
     /// Divide two decimal arrays with specified result precision and scale
     divide-decimal: func(left: borrow<array>, right: borrow<array>, result-precision: u8, result-scale: s8) -> result<array, arrow-error>;
 
+    /// ========== Mathematical Functions ==========
+
+    /// Absolute value
+    abs: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Round to specified number of decimal places
+    round: func(arr: borrow<array>, decimals: s32) -> result<array, arrow-error>;
+
+    /// Ceiling (round up to nearest integer)
+    ceil: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Floor (round down to nearest integer)
+    floor: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Truncate (round towards zero)
+    trunc: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Square root
+    sqrt: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Cube root
+    cbrt: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Raise to power (element-wise)
+    pow: func(base: borrow<array>, exponent: borrow<array>) -> result<array, arrow-error>;
+
+    /// Raise to scalar power
+    pow-scalar: func(arr: borrow<array>, exponent: f64) -> result<array, arrow-error>;
+
+    /// Exponential (e^x)
+    exp: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Natural logarithm (ln)
+    ln: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Base-2 logarithm
+    log2: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Base-10 logarithm
+    log10: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Logarithm with custom base
+    log: func(arr: borrow<array>, base: f64) -> result<array, arrow-error>;
+
+    /// Sign function (-1, 0, or 1)
+    sign: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Trigonometric Functions ==========
+
+    /// Sine
+    sin: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Cosine
+    cos: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Tangent
+    tan: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Arc sine (inverse sine)
+    asin: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Arc cosine (inverse cosine)
+    acos: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Arc tangent (inverse tangent)
+    atan: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Two-argument arc tangent (atan2)
+    atan2: func(y: borrow<array>, x: borrow<array>) -> result<array, arrow-error>;
+
+    /// Hyperbolic sine
+    sinh: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Hyperbolic cosine
+    cosh: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Hyperbolic tangent
+    tanh: func(arr: borrow<array>) -> result<array, arrow-error>;
+
     /// Comparison operations
 
     /// Compare two arrays element-wise
@@ -392,6 +471,202 @@ interface compute {
     /// Select values based on condition (if condition then truthy else falsy)
     if-else: func(condition: borrow<array>, truthy: borrow<array>, falsy: borrow<array>) -> result<array, arrow-error>;
 
+    /// ========== Advanced Null Handling ==========
+
+    /// Forward fill nulls (carry last valid value forward)
+    fill-forward: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Backward fill nulls (carry next valid value backward)
+    fill-backward: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Drop null values from array (returns shorter array)
+    drop-nulls: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Set Operations ==========
+
+    /// Union of two arrays (all unique values from both)
+    set-union: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Intersection of two arrays (values in both)
+    set-intersection: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Difference of two arrays (values in left but not right)
+    set-difference: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Grouping & Aggregation ==========
+
+    /// Aggregation function types
+    enum agg-function {
+        /// Sum of values
+        sum,
+        /// Minimum value
+        %min,
+        /// Maximum value
+        %max,
+        /// Count of values
+        count,
+        /// Mean/average
+        mean,
+        /// First value
+        first,
+        /// Last value
+        last,
+    }
+
+    /// Aggregate specification for group-by operations
+    record aggregate-spec {
+        /// Column index to aggregate
+        column-index: u32,
+        /// Aggregation function to apply
+        function: agg-function,
+        /// Output column name
+        output-name: string,
+    }
+
+    /// Group indices by values in an array
+    /// Returns unique values array and corresponding group indices
+    group-indices: func(arr: borrow<array>) -> result<tuple<array, list<list<u64>>>, arrow-error>;
+
+    /// Group by columns and aggregate
+    group-by: func(
+        batch: borrow<record-batch>,
+        group-columns: list<u32>,
+        aggregates: list<aggregate-spec>
+    ) -> result<record-batch, arrow-error>;
+
+    /// ========== Join Operations ==========
+
+    /// Join type for combining record batches
+    enum join-type {
+        /// Inner join - only matching rows from both sides
+        inner,
+        /// Left join - all rows from left, matching from right
+        left,
+        /// Right join - all rows from right, matching from left
+        %right,
+        /// Full outer join - all rows from both sides
+        full,
+        /// Left semi join - rows from left that have match in right
+        left-semi,
+        /// Left anti join - rows from left that have no match in right
+        left-anti,
+    }
+
+    /// Join two record batches on specified columns
+    join: func(
+        left: borrow<record-batch>,
+        %right: borrow<record-batch>,
+        left-on: list<string>,
+        right-on: list<string>,
+        join-type: join-type
+    ) -> result<record-batch, arrow-error>;
+
+    /// Cross join (cartesian product) of two record batches
+    cross-join: func(
+        left: borrow<record-batch>,
+        %right: borrow<record-batch>
+    ) -> result<record-batch, arrow-error>;
+
+    /// ========== Additional Statistics ==========
+
+    /// Mode (most frequent value) - returns array of mode values
+    mode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Quantile at specified probability (0.0 to 1.0)
+    quantile: func(arr: borrow<array>, q: f64) -> result<option<f64>, arrow-error>;
+
+    /// Multiple quantiles at once
+    quantiles: func(arr: borrow<array>, qs: list<f64>) -> result<list<option<f64>>, arrow-error>;
+
+    /// Interquartile range (Q3 - Q1)
+    iqr: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Skewness (measure of asymmetry)
+    skewness: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Kurtosis (measure of tailedness)
+    kurtosis: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Covariance between two arrays
+    covariance: func(x: borrow<array>, y: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Pearson correlation coefficient between two arrays
+    correlation: func(x: borrow<array>, y: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Options for rolling/moving window calculations
+    record rolling-options {
+        /// Size of the rolling window
+        window-size: u64,
+        /// Minimum number of values required in window (defaults to window-size)
+        min-periods: option<u64>,
+        /// Center the window labels
+        center: bool,
+    }
+
+    /// Rolling sum
+    rolling-sum: func(arr: borrow<array>, options: rolling-options) -> result<array, arrow-error>;
+
+    /// Rolling mean
+    rolling-mean: func(arr: borrow<array>, options: rolling-options) -> result<array, arrow-error>;
+
+    /// Rolling minimum
+    rolling-min: func(arr: borrow<array>, options: rolling-options) -> result<array, arrow-error>;
+
+    /// Rolling maximum
+    rolling-max: func(arr: borrow<array>, options: rolling-options) -> result<array, arrow-error>;
+
+    /// Rolling standard deviation
+    rolling-std: func(arr: borrow<array>, options: rolling-options) -> result<array, arrow-error>;
+
+    /// ========== String Distance Functions ==========
+
+    /// Levenshtein edit distance between pairs of strings
+    /// Returns array of distances for each pair
+    levenshtein: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Levenshtein distance between a string array and a single pattern
+    levenshtein-scalar: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// Jaro similarity score (0.0 to 1.0) between pairs of strings
+    jaro: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Jaro similarity against a single pattern
+    jaro-scalar: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// Jaro-Winkler similarity score (0.0 to 1.0) between pairs of strings
+    jaro-winkler: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Jaro-Winkler similarity against a single pattern
+    jaro-winkler-scalar: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// Soundex phonetic algorithm - returns soundex code for each string
+    soundex: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Hamming distance (number of positions with different characters)
+    /// Requires strings of equal length
+    hamming: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Hamming distance against a single pattern
+    hamming-scalar: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// Damerau-Levenshtein distance (allows transpositions)
+    damerau-levenshtein: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Damerau-Levenshtein distance against a single pattern
+    damerau-levenshtein-scalar: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// Longest common subsequence length
+    lcs-length: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Longest common subsequence length against a single pattern
+    lcs-length-scalar: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// Normalized Levenshtein distance (0.0 to 1.0, where 0.0 is identical)
+    normalized-levenshtein: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Normalized Levenshtein distance against a single pattern
+    normalized-levenshtein-scalar: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
     /// ========== Array Operations ==========
 
     /// Concatenate multiple arrays into one
@@ -481,6 +756,35 @@ interface compute {
 
     /// Truncate timestamp to specified unit
     timestamp-truncate: func(arr: borrow<array>, unit: string) -> result<array, arrow-error>;
+
+    /// Convert timestamp to different timezone
+    timestamp-convert-tz: func(arr: borrow<array>, from-tz: option<string>, to-tz: string) -> result<array, arrow-error>;
+
+    /// Get epoch seconds from timestamp
+    timestamp-epoch-seconds: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get epoch milliseconds from timestamp
+    timestamp-epoch-millis: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Create timestamp from epoch seconds
+    timestamp-from-epoch-seconds: func(arr: borrow<array>, timezone: option<string>) -> result<array, arrow-error>;
+
+    /// Create timestamp from epoch milliseconds
+    timestamp-from-epoch-millis: func(arr: borrow<array>, timezone: option<string>) -> result<array, arrow-error>;
+
+    /// ========== Interval Operations ==========
+
+    /// Create interval from parts (months, days, nanoseconds)
+    make-interval-month-day-nano: func(months: borrow<array>, days: borrow<array>, nanos: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract months from interval
+    interval-months: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract days from interval
+    interval-days: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract nanoseconds from interval
+    interval-nanos: func(arr: borrow<array>) -> result<array, arrow-error>;
 
     /// ========== Regex String Operations ==========
 

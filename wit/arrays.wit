@@ -1,6 +1,6 @@
 /// Arrow array types and operations
 interface arrays {
-    use types.{data-type, schema, field, arrow-error};
+    use types.{data-type, schema, field, arrow-error, time-unit};
 
     /// A generic Arrow array (type-erased)
     resource array {
@@ -174,6 +174,96 @@ interface arrays {
         finish: func() -> array;
     }
 
+    /// ========== Temporal Type Builders ==========
+
+    /// Builder for Date32 arrays (days since epoch)
+    resource date32-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> date32-array-builder;
+        append-value: func(value: s32);
+        append-null: func();
+        append-values: func(values: list<s32>, is-valid: list<bool>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for Date64 arrays (milliseconds since epoch)
+    resource date64-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> date64-array-builder;
+        append-value: func(value: s64);
+        append-null: func();
+        append-values: func(values: list<s64>, is-valid: list<bool>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for Timestamp arrays
+    resource timestamp-array-builder {
+        /// Create a timestamp builder with unit and optional timezone
+        constructor(unit: time-unit, timezone: option<string>);
+        append-value: func(value: s64);
+        append-null: func();
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for Duration arrays
+    resource duration-array-builder {
+        /// Create a duration builder with unit
+        constructor(unit: time-unit);
+        append-value: func(value: s64);
+        append-null: func();
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for Time32 arrays
+    resource time32-array-builder {
+        /// Create a time32 builder with unit (second or millisecond)
+        constructor(unit: time-unit);
+        append-value: func(value: s32);
+        append-null: func();
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for Time64 arrays
+    resource time64-array-builder {
+        /// Create a time64 builder with unit (microsecond or nanosecond)
+        constructor(unit: time-unit);
+        append-value: func(value: s64);
+        append-null: func();
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// ========== Decimal Type Builders ==========
+
+    /// Builder for Decimal128 arrays (128-bit precision decimals)
+    resource decimal128-array-builder {
+        /// Create a decimal128 builder with precision (total digits) and scale (digits after decimal point)
+        constructor(precision: u8, scale: s8);
+        /// Append value as string (e.g., "123.45" or "-9999.99")
+        append-value-string: func(value: string) -> result<_, arrow-error>;
+        /// Append value from high and low 64-bit parts (for direct i128 representation)
+        append-value-i128: func(high: s64, low: u64);
+        append-null: func();
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for Decimal256 arrays (256-bit precision decimals)
+    resource decimal256-array-builder {
+        /// Create a decimal256 builder with precision and scale
+        constructor(precision: u8, scale: s8);
+        /// Append value as bytes (32 bytes, little-endian)
+        append-value-bytes: func(value: list<u8>) -> result<_, arrow-error>;
+        append-null: func();
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
     /// Create an array from typed data
     /// These functions provide convenient ways to create arrays from data
 
@@ -246,6 +336,37 @@ interface arrays {
     /// Get a Binary value
     get-binary: func(arr: borrow<array>, index: u64) -> result<option<list<u8>>, arrow-error>;
 
+    /// ========== Temporal Accessors ==========
+
+    /// Get a Date32 value (days since epoch)
+    get-date32: func(arr: borrow<array>, index: u64) -> result<option<s32>, arrow-error>;
+
+    /// Get a Date64 value (milliseconds since epoch)
+    get-date64: func(arr: borrow<array>, index: u64) -> result<option<s64>, arrow-error>;
+
+    /// Get a Timestamp value
+    get-timestamp: func(arr: borrow<array>, index: u64) -> result<option<s64>, arrow-error>;
+
+    /// Get a Duration value
+    get-duration: func(arr: borrow<array>, index: u64) -> result<option<s64>, arrow-error>;
+
+    /// Get a Time32 value
+    get-time32: func(arr: borrow<array>, index: u64) -> result<option<s32>, arrow-error>;
+
+    /// Get a Time64 value
+    get-time64: func(arr: borrow<array>, index: u64) -> result<option<s64>, arrow-error>;
+
+    /// ========== Decimal Accessors ==========
+
+    /// Get a Decimal128 value as string (formatted with decimal point)
+    get-decimal128-as-string: func(arr: borrow<array>, index: u64) -> result<option<string>, arrow-error>;
+
+    /// Get a Decimal128 value as high and low 64-bit parts (for direct i128 representation)
+    get-decimal128-i128: func(arr: borrow<array>, index: u64) -> result<option<tuple<s64, u64>>, arrow-error>;
+
+    /// Get a Decimal256 value as bytes (32 bytes, little-endian)
+    get-decimal256-bytes: func(arr: borrow<array>, index: u64) -> result<option<list<u8>>, arrow-error>;
+
     /// Concatenate multiple arrays of the same type
     concat: func(arrays: list<array>) -> result<array, arrow-error>;
 
@@ -262,4 +383,56 @@ interface arrays {
 
     /// Get the values (dictionary) array from a dictionary-encoded array
     dictionary-values: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== List Array Operations ==========
+
+    /// Get the length of each list element
+    list-lengths: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get the values array from a list array (flattened)
+    list-values: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Flatten a nested list array by one level
+    list-flatten: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Struct Array Operations ==========
+
+    /// Get a field from a struct array by index
+    struct-field: func(arr: borrow<array>, index: u32) -> result<array, arrow-error>;
+
+    /// Get a field from a struct array by name
+    struct-field-by-name: func(arr: borrow<array>, name: string) -> result<array, arrow-error>;
+
+    /// Get all field names from a struct array
+    struct-field-names: func(arr: borrow<array>) -> result<list<string>, arrow-error>;
+
+    /// ========== Map Array Operations ==========
+
+    /// Get the keys array from a map array
+    map-keys: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get the values array from a map array
+    map-values: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get the offsets array from a map array (for understanding map boundaries)
+    map-offsets: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== FixedSizeList Array Operations ==========
+
+    /// Get the values array from a fixed-size list array (flattened)
+    fixed-list-values: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get the fixed size of the list elements
+    fixed-list-size: func(arr: borrow<array>) -> result<u32, arrow-error>;
+
+    /// ========== Union Array Operations ==========
+
+    /// Get the type IDs array from a union array
+    union-type-ids: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get a child array from a union by type id
+    union-child: func(arr: borrow<array>, type-id: u8) -> result<array, arrow-error>;
+
+    /// Get all child arrays from a union
+    union-children: func(arr: borrow<array>) -> result<list<array>, arrow-error>;
 }

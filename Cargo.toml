@@ -30,11 +30,13 @@ arrow-string = { version = "57.2", default-features = false }
 arrow-arith = { version = "57.2", default-features = false }
 arrow-avro = { version = "57.2", default-features = false }
 
-# Parquet support - only pure Rust compression codecs
+# Parquet support - pure Rust compression codecs
 parquet = { version = "57.2", default-features = false, features = [
     "arrow",
-    "snap",      # Pure Rust snappy implementation
-    "lz4",       # Uses lz4_flex which is pure Rust
+    "snap",               # Pure Rust snappy implementation
+    "lz4",                # Uses lz4_flex which is pure Rust
+    "flate2",             # Gzip support
+    "flate2-rust_backened",  # Use pure Rust miniz_oxide backend (note: typo in feature name is intentional)
 ] }
 
 # Bytes for Parquet ChunkReader

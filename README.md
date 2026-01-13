@@ -21,8 +21,9 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 - **Avro**: Avro format reading with schema inference
 
 ### Compression Codecs
-- **Built-in**: Uncompressed, Snappy, LZ4
-- **Via compression-multiplexer**: ZSTD, GZIP, BZIP2, LZMA (requires component composition)
+- **Built-in (pure Rust)**: Uncompressed, Snappy, LZ4, Gzip
+- **Via compression-multiplexer**: ZSTD (requires component composition)
+- **Not supported**: BZIP2, LZMA (not valid Parquet compression formats)
 
 ### Compute Kernels
 
@@ -83,6 +84,13 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 - time-millisecond, time-microsecond, time-nanosecond
 - date-add-days, date-add-months, date-add-years
 - date-diff-days, timestamp-truncate
+- timestamp-convert-tz (convert timestamp timezone)
+- timestamp-epoch-seconds, timestamp-epoch-millis (convert to epoch)
+- timestamp-from-epoch-seconds, timestamp-from-epoch-millis (create from epoch)
+
+#### Interval Operations
+- make-interval-month-day-nano (create interval from parts)
+- interval-months, interval-days, interval-nanos (extract components)
 
 #### Window Functions
 - row-number, rank, dense-rank, percent-rank, cume-dist, ntile
@@ -159,7 +167,13 @@ arrow-wasm/
 Core Arrow type definitions including data types, schema, field, and error types.
 
 ### arrays
-Array resource with operations for creating, accessing, and manipulating arrays.
+Array resource with operations for creating, accessing, and manipulating arrays. Includes:
+- **List arrays**: list-lengths, list-values, list-flatten
+- **FixedSizeList arrays**: fixed-list-values, fixed-list-size
+- **Struct arrays**: struct-field, struct-field-by-name, struct-field-names
+- **Map arrays**: map-keys, map-values, map-offsets
+- **Union arrays**: union-type-ids, union-child, union-children
+- **Dictionary arrays**: dictionary-encode, dictionary-decode, dictionary-keys, dictionary-values
 
 ### record-batch
 RecordBatch resource for columnar data with schema.
@@ -175,7 +189,7 @@ Flight-like data exchange for distributed Arrow data transfer.
 
 ## Usage with Component Model
 
-This component is designed to be composed with other WebAssembly components. To use compression codecs beyond the built-in ones (Snappy, LZ4), compose with the compression-multiplexer component:
+This component is designed to be composed with other WebAssembly components. To use ZSTD compression (which requires C bindings not available in WASM), compose with the compression-multiplexer component:
 
 ```bash
 # Example composition (requires wasm-tools)
@@ -201,8 +215,9 @@ Apache-2.0
 Most compute kernels are fully implemented using the arrow-rs compute modules. Some advanced operations (window functions, certain regex operations) return `NotImplemented` errors as placeholders for future implementation.
 
 ### Compression
-- **Snappy** and **LZ4** compression are built-in and work directly.
-- **ZSTD**, **GZIP**, **BZIP2**, and **LZMA** require the compression-multiplexer component to be composed at runtime.
+- **Snappy**, **LZ4**, and **Gzip** compression are built-in using pure Rust implementations.
+- **ZSTD** requires the compression-multiplexer component to be composed at runtime (C bindings not supported in WASM).
+- **BZIP2** and **LZMA** are not supported as they are not valid Parquet compression formats.
 
 ### Memory Management
 Arrow data structures use reference counting through the Component Model's resource system, ensuring efficient memory usage when sharing data between operations.
