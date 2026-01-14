@@ -42,6 +42,8 @@ interface io {
         compression-level: option<compression-level>,
         /// Row group size
         max-row-group-size: option<u64>,
+        /// Data page size in bytes
+        data-page-size: option<u64>,
         /// Enable dictionary encoding
         dictionary-enabled: bool,
         /// Enable statistics
@@ -62,6 +64,10 @@ interface io {
         max-records: option<u64>,
         /// Number of rows to infer schema from
         schema-infer-max-records: option<u64>,
+        /// Number of rows to skip before reading (after header if present)
+        skip-rows: option<u64>,
+        /// Strings to interpret as null values (e.g., "NA", "null", "")
+        null-values: option<list<string>>,
     }
 
     /// CSV write options

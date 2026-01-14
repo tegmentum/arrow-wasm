@@ -725,6 +725,9 @@ impl arrays::Guest for Component {
     type LargeBinaryArrayBuilder = LargeBinaryArrayBuilderImpl;
     type FixedSizeBinaryArrayBuilder = FixedSizeBinaryArrayBuilderImpl;
     type ListArrayBuilder = ListArrayBuilderImpl;
+    type LargeListArrayBuilder = LargeListArrayBuilderImpl;
+    type StructArrayBuilder = StructArrayBuilderImpl;
+    type MapArrayBuilder = MapArrayBuilderImpl;
     type Date32ArrayBuilder = Date32ArrayBuilderImpl;
     type Date64ArrayBuilder = Date64ArrayBuilderImpl;
     type TimestampArrayBuilder = TimestampArrayBuilderImpl;
@@ -1299,6 +1302,390 @@ impl arrays::Guest for Component {
         Err(arrays::ArrowError::InvalidArgument("list_flatten requires a list array".to_string()))
     }
 
+    fn unnest_list(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, arrays::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        // Unnest returns the flattened values array (similar to list_values/list_flatten)
+        // The difference is semantic - this explicitly "explodes" the list
+        if let Some(list_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::ListArray>() {
+            return Ok(arrays::Array::new(ArrayImpl { inner: list_arr.values().clone() }));
+        }
+        if let Some(list_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::LargeListArray>() {
+            return Ok(arrays::Array::new(ArrayImpl { inner: list_arr.values().clone() }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("unnest_list requires a list array".to_string()))
+    }
+
+    fn list_contains_i64(arr: arrays::ArrayBorrow<'_>, value: i64) -> Result<arrays::Array, arrays::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(list_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::ListArray>() {
+            let mut builder = arrow_array::builder::BooleanBuilder::with_capacity(list_arr.len());
+            for i in 0..list_arr.len() {
+                if list_arr.is_null(i) {
+                    builder.append_null();
+                } else {
+                    let list_values = list_arr.value(i);
+                    if let Some(int_arr) = list_values.as_any().downcast_ref::<arrow_array::Int64Array>() {
+                        let contains = int_arr.iter().any(|v| v == Some(value));
+                        builder.append_value(contains);
+                    } else {
+                        return Err(arrays::ArrowError::InvalidArgument("List values must be Int64".to_string()));
+                    }
+                }
+            }
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(builder.finish()) }));
+        }
+        if let Some(list_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::LargeListArray>() {
+            let mut builder = arrow_array::builder::BooleanBuilder::with_capacity(list_arr.len());
+            for i in 0..list_arr.len() {
+                if list_arr.is_null(i) {
+                    builder.append_null();
+                } else {
+                    let list_values = list_arr.value(i);
+                    if let Some(int_arr) = list_values.as_any().downcast_ref::<arrow_array::Int64Array>() {
+                        let contains = int_arr.iter().any(|v| v == Some(value));
+                        builder.append_value(contains);
+                    } else {
+                        return Err(arrays::ArrowError::InvalidArgument("List values must be Int64".to_string()));
+                    }
+                }
+            }
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(builder.finish()) }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("list_contains_i64 requires a list array".to_string()))
+    }
+
+    fn list_contains_f64(arr: arrays::ArrayBorrow<'_>, value: f64) -> Result<arrays::Array, arrays::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(list_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::ListArray>() {
+            let mut builder = arrow_array::builder::BooleanBuilder::with_capacity(list_arr.len());
+            for i in 0..list_arr.len() {
+                if list_arr.is_null(i) {
+                    builder.append_null();
+                } else {
+                    let list_values = list_arr.value(i);
+                    if let Some(float_arr) = list_values.as_any().downcast_ref::<arrow_array::Float64Array>() {
+                        // Handle NaN: NaN != NaN, so use total_cmp for proper comparison
+                        let contains = float_arr.iter().any(|v| {
+                            if let Some(v) = v {
+                                if value.is_nan() { v.is_nan() } else { v == value }
+                            } else {
+                                false
+                            }
+                        });
+                        builder.append_value(contains);
+                    } else {
+                        return Err(arrays::ArrowError::InvalidArgument("List values must be Float64".to_string()));
+                    }
+                }
+            }
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(builder.finish()) }));
+        }
+        if let Some(list_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::LargeListArray>() {
+            let mut builder = arrow_array::builder::BooleanBuilder::with_capacity(list_arr.len());
+            for i in 0..list_arr.len() {
+                if list_arr.is_null(i) {
+                    builder.append_null();
+                } else {
+                    let list_values = list_arr.value(i);
+                    if let Some(float_arr) = list_values.as_any().downcast_ref::<arrow_array::Float64Array>() {
+                        let contains = float_arr.iter().any(|v| {
+                            if let Some(v) = v {
+                                if value.is_nan() { v.is_nan() } else { v == value }
+                            } else {
+                                false
+                            }
+                        });
+                        builder.append_value(contains);
+                    } else {
+                        return Err(arrays::ArrowError::InvalidArgument("List values must be Float64".to_string()));
+                    }
+                }
+            }
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(builder.finish()) }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("list_contains_f64 requires a list array".to_string()))
+    }
+
+    fn list_contains_string(arr: arrays::ArrayBorrow<'_>, value: String) -> Result<arrays::Array, arrays::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(list_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::ListArray>() {
+            let mut builder = arrow_array::builder::BooleanBuilder::with_capacity(list_arr.len());
+            for i in 0..list_arr.len() {
+                if list_arr.is_null(i) {
+                    builder.append_null();
+                } else {
+                    let list_values = list_arr.value(i);
+                    if let Some(str_arr) = list_values.as_any().downcast_ref::<arrow_array::StringArray>() {
+                        let contains = str_arr.iter().any(|v| v == Some(value.as_str()));
+                        builder.append_value(contains);
+                    } else {
+                        return Err(arrays::ArrowError::InvalidArgument("List values must be String".to_string()));
+                    }
+                }
+            }
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(builder.finish()) }));
+        }
+        if let Some(list_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::LargeListArray>() {
+            let mut builder = arrow_array::builder::BooleanBuilder::with_capacity(list_arr.len());
+            for i in 0..list_arr.len() {
+                if list_arr.is_null(i) {
+                    builder.append_null();
+                } else {
+                    let list_values = list_arr.value(i);
+                    if let Some(str_arr) = list_values.as_any().downcast_ref::<arrow_array::StringArray>() {
+                        let contains = str_arr.iter().any(|v| v == Some(value.as_str()));
+                        builder.append_value(contains);
+                    } else {
+                        return Err(arrays::ArrowError::InvalidArgument("List values must be String".to_string()));
+                    }
+                }
+            }
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(builder.finish()) }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("list_contains_string requires a list array".to_string()))
+    }
+
+    fn list_element(arr: arrays::ArrayBorrow<'_>, index: i64) -> Result<arrays::Array, arrays::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        // Helper macro for extracting element at index from list
+        macro_rules! list_element_impl {
+            ($list_arr:expr, $value_type:ty, $builder_type:ty) => {{
+                let mut builder = <$builder_type>::with_capacity($list_arr.len());
+                for i in 0..$list_arr.len() {
+                    if $list_arr.is_null(i) {
+                        builder.append_null();
+                    } else {
+                        let list_values = $list_arr.value(i);
+                        let len = list_values.len() as i64;
+                        // Handle negative indices (count from end)
+                        let actual_idx = if index < 0 { len + index } else { index };
+
+                        if actual_idx < 0 || actual_idx >= len {
+                            builder.append_null();
+                        } else if let Some(typed_arr) = list_values.as_any().downcast_ref::<$value_type>() {
+                            if typed_arr.is_null(actual_idx as usize) {
+                                builder.append_null();
+                            } else {
+                                builder.append_value(typed_arr.value(actual_idx as usize));
+                            }
+                        } else {
+                            builder.append_null();
+                        }
+                    }
+                }
+                return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(builder.finish()) }));
+            }};
+        }
+
+        // Try ListArray
+        if let Some(list_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::ListArray>() {
+            // Detect value type from first non-null list
+            let value_type = list_arr.values().data_type();
+            match value_type {
+                arrow_schema::DataType::Int64 => list_element_impl!(list_arr, arrow_array::Int64Array, arrow_array::builder::Int64Builder),
+                arrow_schema::DataType::Int32 => list_element_impl!(list_arr, arrow_array::Int32Array, arrow_array::builder::Int32Builder),
+                arrow_schema::DataType::Float64 => list_element_impl!(list_arr, arrow_array::Float64Array, arrow_array::builder::Float64Builder),
+                arrow_schema::DataType::Float32 => list_element_impl!(list_arr, arrow_array::Float32Array, arrow_array::builder::Float32Builder),
+                arrow_schema::DataType::Boolean => list_element_impl!(list_arr, arrow_array::BooleanArray, arrow_array::builder::BooleanBuilder),
+                arrow_schema::DataType::Utf8 => {
+                    let mut builder = arrow_array::builder::StringBuilder::with_capacity(list_arr.len(), 256);
+                    for i in 0..list_arr.len() {
+                        if list_arr.is_null(i) {
+                            builder.append_null();
+                        } else {
+                            let list_values = list_arr.value(i);
+                            let len = list_values.len() as i64;
+                            let actual_idx = if index < 0 { len + index } else { index };
+
+                            if actual_idx < 0 || actual_idx >= len {
+                                builder.append_null();
+                            } else if let Some(str_arr) = list_values.as_any().downcast_ref::<arrow_array::StringArray>() {
+                                if str_arr.is_null(actual_idx as usize) {
+                                    builder.append_null();
+                                } else {
+                                    builder.append_value(str_arr.value(actual_idx as usize));
+                                }
+                            } else {
+                                builder.append_null();
+                            }
+                        }
+                    }
+                    return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(builder.finish()) }));
+                }
+                _ => return Err(arrays::ArrowError::NotImplemented(format!(
+                    "list_element not implemented for value type {:?}",
+                    value_type
+                ))),
+            }
+        }
+
+        // Try LargeListArray
+        if let Some(list_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::LargeListArray>() {
+            let value_type = list_arr.values().data_type();
+            match value_type {
+                arrow_schema::DataType::Int64 => list_element_impl!(list_arr, arrow_array::Int64Array, arrow_array::builder::Int64Builder),
+                arrow_schema::DataType::Int32 => list_element_impl!(list_arr, arrow_array::Int32Array, arrow_array::builder::Int32Builder),
+                arrow_schema::DataType::Float64 => list_element_impl!(list_arr, arrow_array::Float64Array, arrow_array::builder::Float64Builder),
+                arrow_schema::DataType::Float32 => list_element_impl!(list_arr, arrow_array::Float32Array, arrow_array::builder::Float32Builder),
+                arrow_schema::DataType::Boolean => list_element_impl!(list_arr, arrow_array::BooleanArray, arrow_array::builder::BooleanBuilder),
+                arrow_schema::DataType::Utf8 => {
+                    let mut builder = arrow_array::builder::StringBuilder::with_capacity(list_arr.len(), 256);
+                    for i in 0..list_arr.len() {
+                        if list_arr.is_null(i) {
+                            builder.append_null();
+                        } else {
+                            let list_values = list_arr.value(i);
+                            let len = list_values.len() as i64;
+                            let actual_idx = if index < 0 { len + index } else { index };
+
+                            if actual_idx < 0 || actual_idx >= len {
+                                builder.append_null();
+                            } else if let Some(str_arr) = list_values.as_any().downcast_ref::<arrow_array::StringArray>() {
+                                if str_arr.is_null(actual_idx as usize) {
+                                    builder.append_null();
+                                } else {
+                                    builder.append_value(str_arr.value(actual_idx as usize));
+                                }
+                            } else {
+                                builder.append_null();
+                            }
+                        }
+                    }
+                    return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(builder.finish()) }));
+                }
+                _ => return Err(arrays::ArrowError::NotImplemented(format!(
+                    "list_element not implemented for value type {:?}",
+                    value_type
+                ))),
+            }
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("list_element requires a list array".to_string()))
+    }
+
+    fn arrays_to_list(input_arrays: Vec<arrays::Array>) -> Result<arrays::Array, arrays::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+
+        if input_arrays.is_empty() {
+            return Err(arrays::ArrowError::InvalidArgument("arrays_to_list requires at least one array".to_string()));
+        }
+
+        // Get the first array to determine type
+        let first = input_arrays[0].get::<ArrayImpl>();
+        let data_type = first.inner.data_type().clone();
+        let num_rows = input_arrays.len();
+
+        // Build a ListArray where each input array becomes one row's list
+        match &data_type {
+            arrow_schema::DataType::Int64 => {
+                let mut offsets = vec![0i32];
+                let mut values: Vec<i64> = Vec::new();
+                let mut null_mask: Vec<bool> = Vec::new();
+
+                for arr in &input_arrays {
+                    let arr_impl = arr.get::<ArrayImpl>();
+                    if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+                        for i in 0..int_arr.len() {
+                            if int_arr.is_null(i) {
+                                values.push(0);
+                                null_mask.push(false);
+                            } else {
+                                values.push(int_arr.value(i));
+                                null_mask.push(true);
+                            }
+                        }
+                        offsets.push(values.len() as i32);
+                    } else {
+                        return Err(arrays::ArrowError::InvalidArgument("All arrays must have the same type".to_string()));
+                    }
+                }
+
+                let values_arr = arrow_array::Int64Array::from(values);
+                let list_arr = arrow_array::ListArray::try_new(
+                    Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Int64, true)),
+                    arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(offsets)),
+                    Arc::new(values_arr),
+                    None,
+                ).map_err(|e| arrays::ArrowError::ComputeError(e.to_string()))?;
+
+                Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(list_arr) }))
+            }
+            arrow_schema::DataType::Float64 => {
+                let mut offsets = vec![0i32];
+                let mut values: Vec<f64> = Vec::new();
+
+                for arr in &input_arrays {
+                    let arr_impl = arr.get::<ArrayImpl>();
+                    if let Some(float_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Float64Array>() {
+                        for i in 0..float_arr.len() {
+                            values.push(if float_arr.is_null(i) { f64::NAN } else { float_arr.value(i) });
+                        }
+                        offsets.push(values.len() as i32);
+                    } else {
+                        return Err(arrays::ArrowError::InvalidArgument("All arrays must have the same type".to_string()));
+                    }
+                }
+
+                let values_arr = arrow_array::Float64Array::from(values);
+                let list_arr = arrow_array::ListArray::try_new(
+                    Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float64, true)),
+                    arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(offsets)),
+                    Arc::new(values_arr),
+                    None,
+                ).map_err(|e| arrays::ArrowError::ComputeError(e.to_string()))?;
+
+                Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(list_arr) }))
+            }
+            arrow_schema::DataType::Utf8 => {
+                let mut offsets = vec![0i32];
+                let mut values: Vec<Option<String>> = Vec::new();
+
+                for arr in &input_arrays {
+                    let arr_impl = arr.get::<ArrayImpl>();
+                    if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+                        for i in 0..str_arr.len() {
+                            if str_arr.is_null(i) {
+                                values.push(None);
+                            } else {
+                                values.push(Some(str_arr.value(i).to_string()));
+                            }
+                        }
+                        offsets.push(values.len() as i32);
+                    } else {
+                        return Err(arrays::ArrowError::InvalidArgument("All arrays must have the same type".to_string()));
+                    }
+                }
+
+                let values_arr: arrow_array::StringArray = values.into_iter().collect();
+                let list_arr = arrow_array::ListArray::try_new(
+                    Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Utf8, true)),
+                    arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(offsets)),
+                    Arc::new(values_arr),
+                    None,
+                ).map_err(|e| arrays::ArrowError::ComputeError(e.to_string()))?;
+
+                Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(list_arr) }))
+            }
+            _ => Err(arrays::ArrowError::NotImplemented(format!(
+                "arrays_to_list not implemented for type {:?}",
+                data_type
+            ))),
+        }
+    }
+
     // ========== Struct Array Operations ==========
 
     fn struct_field(arr: arrays::ArrayBorrow<'_>, index: u32) -> Result<arrays::Array, arrays::ArrowError> {
@@ -1345,6 +1732,16 @@ impl arrays::Guest for Component {
         }
 
         Err(arrays::ArrowError::InvalidArgument("struct_field_names requires a struct array".to_string()))
+    }
+
+    fn struct_num_fields(arr: arrays::ArrayBorrow<'_>) -> Result<u32, arrays::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(struct_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StructArray>() {
+            return Ok(struct_arr.num_columns() as u32);
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("struct_num_fields requires a struct array".to_string()))
     }
 
     // ========== Map Array Operations ==========
@@ -1640,6 +2037,106 @@ impl arrays::Guest for Component {
         }
 
         Err(arrays::ArrowError::InvalidArgument("ree_values requires a run-end encoded array".to_string()))
+    }
+
+    // ========== Array Generation Utilities ==========
+
+    fn repeat_i64(value: i64, count: u64) -> arrays::Array {
+        let values: Vec<i64> = vec![value; count as usize];
+        arrays::Array::new(ArrayImpl {
+            inner: Arc::new(arrow_array::Int64Array::from(values)),
+        })
+    }
+
+    fn repeat_f64(value: f64, count: u64) -> arrays::Array {
+        let values: Vec<f64> = vec![value; count as usize];
+        arrays::Array::new(ArrayImpl {
+            inner: Arc::new(arrow_array::Float64Array::from(values)),
+        })
+    }
+
+    fn repeat_string(value: String, count: u64) -> arrays::Array {
+        let values: Vec<&str> = vec![value.as_str(); count as usize];
+        arrays::Array::new(ArrayImpl {
+            inner: Arc::new(arrow_array::StringArray::from(values)),
+        })
+    }
+
+    fn repeat_bool(value: bool, count: u64) -> arrays::Array {
+        let values: Vec<bool> = vec![value; count as usize];
+        arrays::Array::new(ArrayImpl {
+            inner: Arc::new(arrow_array::BooleanArray::from(values)),
+        })
+    }
+
+    fn range_i64(start: i64, stop: i64, step: i64) -> Result<arrays::Array, arrays::ArrowError> {
+        if step == 0 {
+            return Err(arrays::ArrowError::InvalidArgument("step cannot be zero".to_string()));
+        }
+
+        let values: Vec<i64> = if step > 0 {
+            (start..stop).step_by(step as usize).collect()
+        } else {
+            // For negative step, we need to go from start down to stop
+            let mut v = Vec::new();
+            let mut current = start;
+            while current > stop {
+                v.push(current);
+                current += step;
+            }
+            v
+        };
+
+        Ok(arrays::Array::new(ArrayImpl {
+            inner: Arc::new(arrow_array::Int64Array::from(values)),
+        }))
+    }
+
+    fn range_f64(start: f64, stop: f64, step: f64) -> Result<arrays::Array, arrays::ArrowError> {
+        if step == 0.0 {
+            return Err(arrays::ArrowError::InvalidArgument("step cannot be zero".to_string()));
+        }
+
+        let mut values: Vec<f64> = Vec::new();
+        let mut current = start;
+
+        if step > 0.0 {
+            while current < stop {
+                values.push(current);
+                current += step;
+            }
+        } else {
+            while current > stop {
+                values.push(current);
+                current += step;
+            }
+        }
+
+        Ok(arrays::Array::new(ArrayImpl {
+            inner: Arc::new(arrow_array::Float64Array::from(values)),
+        }))
+    }
+
+    fn range_date(start: i32, stop: i32, step: i32) -> Result<arrays::Array, arrays::ArrowError> {
+        if step == 0 {
+            return Err(arrays::ArrowError::InvalidArgument("step cannot be zero".to_string()));
+        }
+
+        let values: Vec<i32> = if step > 0 {
+            (start..stop).step_by(step as usize).collect()
+        } else {
+            let mut v = Vec::new();
+            let mut current = start;
+            while current > stop {
+                v.push(current);
+                current += step;
+            }
+            v
+        };
+
+        Ok(arrays::Array::new(ArrayImpl {
+            inner: Arc::new(arrow_array::Date32Array::from(values)),
+        }))
     }
 }
 
@@ -2045,6 +2542,475 @@ impl arrays::GuestListArrayBuilder for ListArrayBuilderImpl {
             // Shouldn't happen, return empty list
             arrays::Array::new(ArrayImpl {
                 inner: Arc::new(arrow_array::builder::ListBuilder::new(arrow_array::builder::Int64Builder::new()).finish()),
+            })
+        }
+    }
+}
+
+// ============================================================================
+// LargeList Array Builder
+// ============================================================================
+
+struct LargeListArrayBuilderImpl {
+    i64_builder: Option<RefCell<arrow_array::builder::LargeListBuilder<arrow_array::builder::Int64Builder>>>,
+    f64_builder: Option<RefCell<arrow_array::builder::LargeListBuilder<arrow_array::builder::Float64Builder>>>,
+    string_builder: Option<RefCell<arrow_array::builder::LargeListBuilder<arrow_array::builder::StringBuilder>>>,
+}
+
+impl arrays::GuestLargeListArrayBuilder for LargeListArrayBuilderImpl {
+    fn new(value_type: types::DataType) -> Self {
+        match &value_type {
+            types::DataType::Int64 => Self {
+                i64_builder: Some(RefCell::new(arrow_array::builder::LargeListBuilder::new(arrow_array::builder::Int64Builder::new()))),
+                f64_builder: None,
+                string_builder: None,
+            },
+            types::DataType::Float64 => Self {
+                i64_builder: None,
+                f64_builder: Some(RefCell::new(arrow_array::builder::LargeListBuilder::new(arrow_array::builder::Float64Builder::new()))),
+                string_builder: None,
+            },
+            types::DataType::Utf8 => Self {
+                i64_builder: None,
+                f64_builder: None,
+                string_builder: Some(RefCell::new(arrow_array::builder::LargeListBuilder::new(arrow_array::builder::StringBuilder::new()))),
+            },
+            _ => Self {
+                i64_builder: Some(RefCell::new(arrow_array::builder::LargeListBuilder::new(arrow_array::builder::Int64Builder::new()))),
+                f64_builder: None,
+                string_builder: None,
+            },
+        }
+    }
+
+    fn append_null(&self) {
+        if let Some(builder) = &self.i64_builder {
+            builder.borrow_mut().append_null();
+        } else if let Some(builder) = &self.f64_builder {
+            builder.borrow_mut().append_null();
+        } else if let Some(builder) = &self.string_builder {
+            builder.borrow_mut().append_null();
+        }
+    }
+
+    fn append_values_i64(&self, values: Vec<i64>) {
+        if let Some(builder) = &self.i64_builder {
+            let mut b = builder.borrow_mut();
+            let values_builder = b.values();
+            for v in values {
+                values_builder.append_value(v);
+            }
+            b.append(true);
+        }
+    }
+
+    fn append_values_f64(&self, values: Vec<f64>) {
+        if let Some(builder) = &self.f64_builder {
+            let mut b = builder.borrow_mut();
+            let values_builder = b.values();
+            for v in values {
+                values_builder.append_value(v);
+            }
+            b.append(true);
+        }
+    }
+
+    fn append_values_string(&self, values: Vec<String>) {
+        if let Some(builder) = &self.string_builder {
+            let mut b = builder.borrow_mut();
+            let values_builder = b.values();
+            for v in values {
+                values_builder.append_value(&v);
+            }
+            b.append(true);
+        }
+    }
+
+    fn len(&self) -> u64 {
+        if let Some(builder) = &self.i64_builder {
+            builder.borrow().len() as u64
+        } else if let Some(builder) = &self.f64_builder {
+            builder.borrow().len() as u64
+        } else if let Some(builder) = &self.string_builder {
+            builder.borrow().len() as u64
+        } else {
+            0
+        }
+    }
+
+    fn finish(&self) -> arrays::Array {
+        if let Some(builder) = &self.i64_builder {
+            arrays::Array::new(ArrayImpl {
+                inner: Arc::new(builder.borrow_mut().finish()),
+            })
+        } else if let Some(builder) = &self.f64_builder {
+            arrays::Array::new(ArrayImpl {
+                inner: Arc::new(builder.borrow_mut().finish()),
+            })
+        } else if let Some(builder) = &self.string_builder {
+            arrays::Array::new(ArrayImpl {
+                inner: Arc::new(builder.borrow_mut().finish()),
+            })
+        } else {
+            arrays::Array::new(ArrayImpl {
+                inner: Arc::new(arrow_array::builder::LargeListBuilder::new(arrow_array::builder::Int64Builder::new()).finish()),
+            })
+        }
+    }
+}
+
+// ============================================================================
+// Struct Array Builder
+// ============================================================================
+
+struct StructArrayBuilderImpl {
+    fields: Vec<(String, types::DataType)>,
+    // Store builders for each field, keyed by index
+    i64_builders: RefCell<std::collections::HashMap<u32, arrow_array::builder::Int64Builder>>,
+    f64_builders: RefCell<std::collections::HashMap<u32, arrow_array::builder::Float64Builder>>,
+    string_builders: RefCell<std::collections::HashMap<u32, arrow_array::builder::StringBuilder>>,
+    bool_builders: RefCell<std::collections::HashMap<u32, arrow_array::builder::BooleanBuilder>>,
+    null_bitmap: RefCell<Vec<bool>>,
+    row_count: RefCell<usize>,
+}
+
+impl arrays::GuestStructArrayBuilder for StructArrayBuilderImpl {
+    fn new(fields: Vec<(String, types::DataType)>) -> Self {
+        let mut i64_builders = std::collections::HashMap::new();
+        let mut f64_builders = std::collections::HashMap::new();
+        let mut string_builders = std::collections::HashMap::new();
+        let mut bool_builders = std::collections::HashMap::new();
+
+        for (idx, (_, dtype)) in fields.iter().enumerate() {
+            match dtype {
+                types::DataType::Int64 => { i64_builders.insert(idx as u32, arrow_array::builder::Int64Builder::new()); }
+                types::DataType::Float64 => { f64_builders.insert(idx as u32, arrow_array::builder::Float64Builder::new()); }
+                types::DataType::Utf8 => { string_builders.insert(idx as u32, arrow_array::builder::StringBuilder::new()); }
+                types::DataType::Boolean => { bool_builders.insert(idx as u32, arrow_array::builder::BooleanBuilder::new()); }
+                _ => { i64_builders.insert(idx as u32, arrow_array::builder::Int64Builder::new()); }
+            }
+        }
+
+        Self {
+            fields,
+            i64_builders: RefCell::new(i64_builders),
+            f64_builders: RefCell::new(f64_builders),
+            string_builders: RefCell::new(string_builders),
+            bool_builders: RefCell::new(bool_builders),
+            null_bitmap: RefCell::new(Vec::new()),
+            row_count: RefCell::new(0),
+        }
+    }
+
+    fn append_field_i64(&self, field_index: u32, value: Option<i64>) -> Result<(), arrays::ArrowError> {
+        let mut builders = self.i64_builders.borrow_mut();
+        if let Some(builder) = builders.get_mut(&field_index) {
+            match value {
+                Some(v) => builder.append_value(v),
+                None => builder.append_null(),
+            }
+            Ok(())
+        } else {
+            Err(arrays::ArrowError::InvalidArgument(format!(
+                "Field {} is not an Int64 field",
+                field_index
+            )))
+        }
+    }
+
+    fn append_field_f64(&self, field_index: u32, value: Option<f64>) -> Result<(), arrays::ArrowError> {
+        let mut builders = self.f64_builders.borrow_mut();
+        if let Some(builder) = builders.get_mut(&field_index) {
+            match value {
+                Some(v) => builder.append_value(v),
+                None => builder.append_null(),
+            }
+            Ok(())
+        } else {
+            Err(arrays::ArrowError::InvalidArgument(format!(
+                "Field {} is not a Float64 field",
+                field_index
+            )))
+        }
+    }
+
+    fn append_field_string(&self, field_index: u32, value: Option<String>) -> Result<(), arrays::ArrowError> {
+        let mut builders = self.string_builders.borrow_mut();
+        if let Some(builder) = builders.get_mut(&field_index) {
+            match value {
+                Some(v) => builder.append_value(&v),
+                None => builder.append_null(),
+            }
+            Ok(())
+        } else {
+            Err(arrays::ArrowError::InvalidArgument(format!(
+                "Field {} is not a String field",
+                field_index
+            )))
+        }
+    }
+
+    fn append_field_bool(&self, field_index: u32, value: Option<bool>) -> Result<(), arrays::ArrowError> {
+        let mut builders = self.bool_builders.borrow_mut();
+        if let Some(builder) = builders.get_mut(&field_index) {
+            match value {
+                Some(v) => builder.append_value(v),
+                None => builder.append_null(),
+            }
+            Ok(())
+        } else {
+            Err(arrays::ArrowError::InvalidArgument(format!(
+                "Field {} is not a Boolean field",
+                field_index
+            )))
+        }
+    }
+
+    fn append_row(&self) -> Result<(), arrays::ArrowError> {
+        self.null_bitmap.borrow_mut().push(true);
+        *self.row_count.borrow_mut() += 1;
+        Ok(())
+    }
+
+    fn append_null(&self) {
+        // Append nulls to all field builders
+        for (idx, (_, dtype)) in self.fields.iter().enumerate() {
+            match dtype {
+                types::DataType::Int64 => {
+                    if let Some(builder) = self.i64_builders.borrow_mut().get_mut(&(idx as u32)) {
+                        builder.append_null();
+                    }
+                }
+                types::DataType::Float64 => {
+                    if let Some(builder) = self.f64_builders.borrow_mut().get_mut(&(idx as u32)) {
+                        builder.append_null();
+                    }
+                }
+                types::DataType::Utf8 => {
+                    if let Some(builder) = self.string_builders.borrow_mut().get_mut(&(idx as u32)) {
+                        builder.append_null();
+                    }
+                }
+                types::DataType::Boolean => {
+                    if let Some(builder) = self.bool_builders.borrow_mut().get_mut(&(idx as u32)) {
+                        builder.append_null();
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.null_bitmap.borrow_mut().push(false);
+        *self.row_count.borrow_mut() += 1;
+    }
+
+    fn len(&self) -> u64 {
+        *self.row_count.borrow() as u64
+    }
+
+    fn finish(&self) -> arrays::Array {
+        let mut field_arrays: Vec<Arc<dyn arrow_array::Array>> = Vec::new();
+        let mut schema_fields: Vec<arrow_schema::FieldRef> = Vec::new();
+
+        for (idx, (name, dtype)) in self.fields.iter().enumerate() {
+            let arrow_dtype = convert::to_arrow_data_type(dtype);
+            schema_fields.push(Arc::new(arrow_schema::Field::new(name.clone(), arrow_dtype.clone(), true)));
+
+            match dtype {
+                types::DataType::Int64 => {
+                    if let Some(builder) = self.i64_builders.borrow_mut().get_mut(&(idx as u32)) {
+                        field_arrays.push(Arc::new(builder.finish()));
+                    }
+                }
+                types::DataType::Float64 => {
+                    if let Some(builder) = self.f64_builders.borrow_mut().get_mut(&(idx as u32)) {
+                        field_arrays.push(Arc::new(builder.finish()));
+                    }
+                }
+                types::DataType::Utf8 => {
+                    if let Some(builder) = self.string_builders.borrow_mut().get_mut(&(idx as u32)) {
+                        field_arrays.push(Arc::new(builder.finish()));
+                    }
+                }
+                types::DataType::Boolean => {
+                    if let Some(builder) = self.bool_builders.borrow_mut().get_mut(&(idx as u32)) {
+                        field_arrays.push(Arc::new(builder.finish()));
+                    }
+                }
+                _ => {
+                    // Default to empty Int64 for unsupported types
+                    let empty_values: Vec<i64> = vec![];
+                    let empty = arrow_array::Int64Array::from(empty_values);
+                    field_arrays.push(Arc::new(empty));
+                }
+            }
+        }
+
+        // Create null buffer from bitmap
+        let null_bitmap = self.null_bitmap.borrow();
+        let null_buffer = if null_bitmap.iter().any(|&v| !v) {
+            Some(arrow_buffer::NullBuffer::from(null_bitmap.clone()))
+        } else {
+            None
+        };
+
+        let struct_arr = arrow_array::StructArray::try_new(
+            schema_fields.into(),
+            field_arrays,
+            null_buffer,
+        ).unwrap_or_else(|_| {
+            // Fallback to empty struct
+            arrow_array::StructArray::new_empty_fields(0, None)
+        });
+
+        arrays::Array::new(ArrayImpl { inner: Arc::new(struct_arr) })
+    }
+}
+
+// ============================================================================
+// Map Array Builder
+// ============================================================================
+
+struct MapArrayBuilderImpl {
+    // For simplicity, support string keys with different value types
+    string_i64_builder: Option<RefCell<arrow_array::builder::MapBuilder<arrow_array::builder::StringBuilder, arrow_array::builder::Int64Builder>>>,
+    string_f64_builder: Option<RefCell<arrow_array::builder::MapBuilder<arrow_array::builder::StringBuilder, arrow_array::builder::Float64Builder>>>,
+    string_string_builder: Option<RefCell<arrow_array::builder::MapBuilder<arrow_array::builder::StringBuilder, arrow_array::builder::StringBuilder>>>,
+}
+
+impl arrays::GuestMapArrayBuilder for MapArrayBuilderImpl {
+    fn new(key_type: types::DataType, value_type: types::DataType) -> Self {
+        match (&key_type, &value_type) {
+            (types::DataType::Utf8, types::DataType::Int64) => Self {
+                string_i64_builder: Some(RefCell::new(arrow_array::builder::MapBuilder::new(
+                    None,
+                    arrow_array::builder::StringBuilder::new(),
+                    arrow_array::builder::Int64Builder::new(),
+                ))),
+                string_f64_builder: None,
+                string_string_builder: None,
+            },
+            (types::DataType::Utf8, types::DataType::Float64) => Self {
+                string_i64_builder: None,
+                string_f64_builder: Some(RefCell::new(arrow_array::builder::MapBuilder::new(
+                    None,
+                    arrow_array::builder::StringBuilder::new(),
+                    arrow_array::builder::Float64Builder::new(),
+                ))),
+                string_string_builder: None,
+            },
+            (types::DataType::Utf8, types::DataType::Utf8) => Self {
+                string_i64_builder: None,
+                string_f64_builder: None,
+                string_string_builder: Some(RefCell::new(arrow_array::builder::MapBuilder::new(
+                    None,
+                    arrow_array::builder::StringBuilder::new(),
+                    arrow_array::builder::StringBuilder::new(),
+                ))),
+            },
+            _ => Self {
+                // Default to string -> i64
+                string_i64_builder: Some(RefCell::new(arrow_array::builder::MapBuilder::new(
+                    None,
+                    arrow_array::builder::StringBuilder::new(),
+                    arrow_array::builder::Int64Builder::new(),
+                ))),
+                string_f64_builder: None,
+                string_string_builder: None,
+            },
+        }
+    }
+
+    fn start_map(&self) {
+        // Maps don't have explicit start - entries are appended
+    }
+
+    fn append_entry_string_i64(&self, key: String, value: Option<i64>) {
+        if let Some(builder) = &self.string_i64_builder {
+            let mut b = builder.borrow_mut();
+            b.keys().append_value(&key);
+            match value {
+                Some(v) => b.values().append_value(v),
+                None => b.values().append_null(),
+            }
+        }
+    }
+
+    fn append_entry_string_f64(&self, key: String, value: Option<f64>) {
+        if let Some(builder) = &self.string_f64_builder {
+            let mut b = builder.borrow_mut();
+            b.keys().append_value(&key);
+            match value {
+                Some(v) => b.values().append_value(v),
+                None => b.values().append_null(),
+            }
+        }
+    }
+
+    fn append_entry_string_string(&self, key: String, value: Option<String>) {
+        if let Some(builder) = &self.string_string_builder {
+            let mut b = builder.borrow_mut();
+            b.keys().append_value(&key);
+            match value {
+                Some(v) => b.values().append_value(&v),
+                None => b.values().append_null(),
+            }
+        }
+    }
+
+    fn end_map(&self) {
+        if let Some(builder) = &self.string_i64_builder {
+            let _ = builder.borrow_mut().append(true);
+        } else if let Some(builder) = &self.string_f64_builder {
+            let _ = builder.borrow_mut().append(true);
+        } else if let Some(builder) = &self.string_string_builder {
+            let _ = builder.borrow_mut().append(true);
+        }
+    }
+
+    fn append_null(&self) {
+        if let Some(builder) = &self.string_i64_builder {
+            let _ = builder.borrow_mut().append(false);
+        } else if let Some(builder) = &self.string_f64_builder {
+            let _ = builder.borrow_mut().append(false);
+        } else if let Some(builder) = &self.string_string_builder {
+            let _ = builder.borrow_mut().append(false);
+        }
+    }
+
+    fn len(&self) -> u64 {
+        if let Some(builder) = &self.string_i64_builder {
+            builder.borrow().len() as u64
+        } else if let Some(builder) = &self.string_f64_builder {
+            builder.borrow().len() as u64
+        } else if let Some(builder) = &self.string_string_builder {
+            builder.borrow().len() as u64
+        } else {
+            0
+        }
+    }
+
+    fn finish(&self) -> arrays::Array {
+        if let Some(builder) = &self.string_i64_builder {
+            arrays::Array::new(ArrayImpl {
+                inner: Arc::new(builder.borrow_mut().finish()),
+            })
+        } else if let Some(builder) = &self.string_f64_builder {
+            arrays::Array::new(ArrayImpl {
+                inner: Arc::new(builder.borrow_mut().finish()),
+            })
+        } else if let Some(builder) = &self.string_string_builder {
+            arrays::Array::new(ArrayImpl {
+                inner: Arc::new(builder.borrow_mut().finish()),
+            })
+        } else {
+            // Return empty map
+            let mut builder: arrow_array::builder::MapBuilder<arrow_array::builder::StringBuilder, arrow_array::builder::Int64Builder> = arrow_array::builder::MapBuilder::new(
+                None,
+                arrow_array::builder::StringBuilder::new(),
+                arrow_array::builder::Int64Builder::new(),
+            );
+            arrays::Array::new(ArrayImpl {
+                inner: Arc::new(builder.finish()),
             })
         }
     }
@@ -5621,6 +6587,363 @@ impl compute::Guest for Component {
         Err(compute::ArrowError::InvalidArgument("Expected Int64 array".to_string()))
     }
 
+    fn date_is_weekend(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        // Helper to convert days since epoch to day of week (0=Sunday, 6=Saturday)
+        fn days_to_dow(days: i32) -> u32 {
+            // Unix epoch (1970-01-01) was Thursday (4)
+            ((days + 4) % 7).unsigned_abs()
+        }
+
+        if let Some(date_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Date32Array>() {
+            let result: arrow_array::BooleanArray = date_arr.iter()
+                .map(|opt| opt.map(|days| {
+                    let dow = days_to_dow(days);
+                    dow == 0 || dow == 6  // Sunday or Saturday
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(date_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Date64Array>() {
+            let result: arrow_array::BooleanArray = date_arr.iter()
+                .map(|opt| opt.map(|millis| {
+                    let days = (millis / 86_400_000) as i32;
+                    let dow = days_to_dow(days);
+                    dow == 0 || dow == 6
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected Date32 or Date64 array".to_string()))
+    }
+
+    fn date_is_leap_year(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        // Helper to check if year is leap year
+        fn is_leap_year(year: i32) -> bool {
+            (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+        }
+
+        // Helper to get year from days since epoch
+        fn days_to_year(days: i32) -> i32 {
+            // Approximate - more accurate would use a proper date library
+            let days_since_year_zero = days + 719_528; // Days from year 0 to 1970
+            (days_since_year_zero as f64 / 365.2425) as i32
+        }
+
+        if let Some(date_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Date32Array>() {
+            let result: arrow_array::BooleanArray = date_arr.iter()
+                .map(|opt| opt.map(|days| is_leap_year(days_to_year(days))))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(date_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Date64Array>() {
+            let result: arrow_array::BooleanArray = date_arr.iter()
+                .map(|opt| opt.map(|millis| {
+                    let days = (millis / 86_400_000) as i32;
+                    is_leap_year(days_to_year(days))
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected Date32 or Date64 array".to_string()))
+    }
+
+    fn date_days_in_month(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        // Days in each month (non-leap year)
+        const DAYS_IN_MONTH: [i32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+        fn is_leap_year(year: i32) -> bool {
+            (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+        }
+
+        // Extract year and month from days since epoch
+        fn days_to_year_month(days: i32) -> (i32, u32) {
+            let mut remaining_days = days + 719_528; // Days from year 0 to 1970
+            let mut year = (remaining_days as f64 / 365.2425) as i32;
+
+            // Calculate days at start of year
+            fn days_in_year(y: i32) -> i32 {
+                y * 365 + y / 4 - y / 100 + y / 400
+            }
+
+            let days_at_year_start = days_in_year(year);
+            remaining_days = remaining_days - days_at_year_start;
+
+            // Adjust if we overshot
+            while remaining_days < 0 {
+                year -= 1;
+                remaining_days += if is_leap_year(year) { 366 } else { 365 };
+            }
+
+            // Find month
+            let is_leap = is_leap_year(year);
+            let mut month = 0u32;
+            for m in 0..12 {
+                let days_in_month = if m == 1 && is_leap { 29 } else { DAYS_IN_MONTH[m as usize] };
+                if remaining_days < days_in_month {
+                    month = m + 1;
+                    break;
+                }
+                remaining_days -= days_in_month;
+                if m == 11 { month = 12; }
+            }
+
+            (year, month)
+        }
+
+        fn get_days_in_month(year: i32, month: u32) -> i32 {
+            let is_leap = is_leap_year(year);
+            let idx = (month.saturating_sub(1)) as usize;
+            if idx < 12 {
+                if idx == 1 && is_leap { 29 } else { DAYS_IN_MONTH[idx] }
+            } else {
+                31
+            }
+        }
+
+        if let Some(date_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Date32Array>() {
+            let result: arrow_array::Int32Array = date_arr.iter()
+                .map(|opt| opt.map(|days| {
+                    let (year, month) = days_to_year_month(days);
+                    get_days_in_month(year, month)
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(date_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Date64Array>() {
+            let result: arrow_array::Int32Array = date_arr.iter()
+                .map(|opt| opt.map(|millis| {
+                    let days = (millis / 86_400_000) as i32;
+                    let (year, month) = days_to_year_month(days);
+                    get_days_in_month(year, month)
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected Date32 or Date64 array".to_string()))
+    }
+
+    fn timestamp_add_interval(arr: arrays::ArrayBorrow<'_>, months: i32, days: i32, nanos: i64) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        // Convert interval to nanoseconds (for time portion) and days (for date portion)
+        let days_to_add = days + (months * 30); // Approximate months to days
+        let nanos_per_day: i64 = 86_400_000_000_000;
+        let total_nanos = (days_to_add as i64) * nanos_per_day + nanos;
+
+        macro_rules! add_interval_impl {
+            ($arr_type:ty, $scale:expr) => {
+                if let Some(ts_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
+                    let offset = total_nanos / $scale;
+                    let result: $arr_type = ts_arr.iter()
+                        .map(|opt| opt.map(|v| v + offset))
+                        .collect();
+                    return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+                }
+            };
+        }
+
+        add_interval_impl!(arrow_array::TimestampNanosecondArray, 1i64);
+        add_interval_impl!(arrow_array::TimestampMicrosecondArray, 1_000i64);
+        add_interval_impl!(arrow_array::TimestampMillisecondArray, 1_000_000i64);
+        add_interval_impl!(arrow_array::TimestampSecondArray, 1_000_000_000i64);
+
+        Err(compute::ArrowError::InvalidArgument("Expected Timestamp array".to_string()))
+    }
+
+    fn timestamp_diff(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>, unit: types::TimeUnit) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        // Calculate divisor based on target unit
+        let divisor: i64 = match unit {
+            types::TimeUnit::Second => 1_000_000_000,
+            types::TimeUnit::Millisecond => 1_000_000,
+            types::TimeUnit::Microsecond => 1_000,
+            types::TimeUnit::Nanosecond => 1,
+        };
+
+        macro_rules! diff_impl {
+            ($arr_type:ty, $scale:expr) => {
+                if let (Some(l), Some(r)) = (
+                    left_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                    right_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                ) {
+                    let result: arrow_array::Int64Array = l.iter().zip(r.iter())
+                        .map(|(lv, rv)| {
+                            match (lv, rv) {
+                                (Some(l), Some(r)) => Some(((l - r) * $scale) / divisor),
+                                _ => None,
+                            }
+                        })
+                        .collect();
+                    return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+                }
+            };
+        }
+
+        diff_impl!(arrow_array::TimestampNanosecondArray, 1i64);
+        diff_impl!(arrow_array::TimestampMicrosecondArray, 1_000i64);
+        diff_impl!(arrow_array::TimestampMillisecondArray, 1_000_000i64);
+        diff_impl!(arrow_array::TimestampSecondArray, 1_000_000_000i64);
+
+        Err(compute::ArrowError::InvalidArgument("Expected matching Timestamp arrays".to_string()))
+    }
+
+    fn make_date(year: arrays::ArrayBorrow<'_>, month: arrays::ArrayBorrow<'_>, day: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let year_impl = year.get::<ArrayImpl>();
+        let month_impl = month.get::<ArrayImpl>();
+        let day_impl = day.get::<ArrayImpl>();
+
+        let year_arr = year_impl.inner.as_any()
+            .downcast_ref::<arrow_array::Int32Array>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("year must be Int32 array".to_string()))?;
+        let month_arr = month_impl.inner.as_any()
+            .downcast_ref::<arrow_array::Int32Array>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("month must be Int32 array".to_string()))?;
+        let day_arr = day_impl.inner.as_any()
+            .downcast_ref::<arrow_array::Int32Array>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("day must be Int32 array".to_string()))?;
+
+        // Convert year/month/day to days since epoch
+        fn ymd_to_days(year: i32, month: i32, day: i32) -> i32 {
+            // Adjust for months out of range
+            let (y, m) = if month <= 0 {
+                let years_sub = (-month) / 12 + 1;
+                (year - years_sub, month + years_sub * 12)
+            } else if month > 12 {
+                let years_add = (month - 1) / 12;
+                (year + years_add, month - years_add * 12)
+            } else {
+                (year, month)
+            };
+
+            // Days from year 1 to year y
+            let days_before_year = (y - 1) * 365 + (y - 1) / 4 - (y - 1) / 100 + (y - 1) / 400;
+
+            // Days in months before current month
+            const DAYS_BEFORE_MONTH: [i32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+            let is_leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+            let month_idx = ((m - 1).max(0).min(11)) as usize;
+            let days_before_month = DAYS_BEFORE_MONTH[month_idx] + if is_leap && m > 2 { 1 } else { 0 };
+
+            // Total days minus Unix epoch offset
+            days_before_year + days_before_month + day - 719_529
+        }
+
+        let result: arrow_array::Date32Array = year_arr.iter()
+            .zip(month_arr.iter())
+            .zip(day_arr.iter())
+            .map(|((y, m), d)| {
+                match (y, m, d) {
+                    (Some(year), Some(month), Some(day)) => Some(ymd_to_days(year, month, day)),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn make_timestamp(
+        year: arrays::ArrayBorrow<'_>,
+        month: arrays::ArrayBorrow<'_>,
+        day: arrays::ArrayBorrow<'_>,
+        hour: arrays::ArrayBorrow<'_>,
+        minute: arrays::ArrayBorrow<'_>,
+        second: arrays::ArrayBorrow<'_>,
+        timezone: Option<String>,
+    ) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let year_impl = year.get::<ArrayImpl>();
+        let month_impl = month.get::<ArrayImpl>();
+        let day_impl = day.get::<ArrayImpl>();
+        let hour_impl = hour.get::<ArrayImpl>();
+        let minute_impl = minute.get::<ArrayImpl>();
+        let second_impl = second.get::<ArrayImpl>();
+
+        let year_arr = year_impl.inner.as_any()
+            .downcast_ref::<arrow_array::Int32Array>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("year must be Int32 array".to_string()))?;
+        let month_arr = month_impl.inner.as_any()
+            .downcast_ref::<arrow_array::Int32Array>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("month must be Int32 array".to_string()))?;
+        let day_arr = day_impl.inner.as_any()
+            .downcast_ref::<arrow_array::Int32Array>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("day must be Int32 array".to_string()))?;
+        let hour_arr = hour_impl.inner.as_any()
+            .downcast_ref::<arrow_array::Int32Array>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("hour must be Int32 array".to_string()))?;
+        let minute_arr = minute_impl.inner.as_any()
+            .downcast_ref::<arrow_array::Int32Array>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("minute must be Int32 array".to_string()))?;
+        let second_arr = second_impl.inner.as_any()
+            .downcast_ref::<arrow_array::Int32Array>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("second must be Int32 array".to_string()))?;
+
+        // Convert to epoch seconds
+        fn ymdhms_to_epoch(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: i32) -> i64 {
+            // Days from year 1 to year y
+            let (y, m) = if month <= 0 {
+                let years_sub = (-month) / 12 + 1;
+                (year - years_sub, month + years_sub * 12)
+            } else if month > 12 {
+                let years_add = (month - 1) / 12;
+                (year + years_add, month - years_add * 12)
+            } else {
+                (year, month)
+            };
+
+            let days_before_year = (y - 1) * 365 + (y - 1) / 4 - (y - 1) / 100 + (y - 1) / 400;
+            const DAYS_BEFORE_MONTH: [i32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+            let is_leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+            let month_idx = ((m - 1).max(0).min(11)) as usize;
+            let days_before_month = DAYS_BEFORE_MONTH[month_idx] + if is_leap && m > 2 { 1 } else { 0 };
+            let total_days = days_before_year + days_before_month + day - 719_529;
+
+            (total_days as i64) * 86_400 + (hour as i64) * 3600 + (minute as i64) * 60 + (second as i64)
+        }
+
+        let values: Vec<Option<i64>> = year_arr.iter()
+            .zip(month_arr.iter())
+            .zip(day_arr.iter())
+            .zip(hour_arr.iter())
+            .zip(minute_arr.iter())
+            .zip(second_arr.iter())
+            .map(|(((((y, mo), d), h), mi), s)| {
+                match (y, mo, d, h, mi, s) {
+                    (Some(year), Some(month), Some(day), Some(hour), Some(minute), Some(second)) =>
+                        Some(ymdhms_to_epoch(year, month, day, hour, minute, second)),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        let result = match timezone {
+            Some(tz) => arrow_array::TimestampSecondArray::from(values).with_timezone(tz),
+            None => arrow_array::TimestampSecondArray::from(values),
+        };
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
     // ========== Interval Operations ==========
 
     fn make_interval_month_day_nano(months: arrays::ArrayBorrow<'_>, days: arrays::ArrayBorrow<'_>, nanos: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
@@ -7713,6 +9036,160 @@ impl compute::Guest for Component {
         }
 
         Err(compute::ArrowError::NotImplemented("if_else not implemented for this array type".to_string()))
+    }
+
+    // ========== SQL Functions ==========
+
+    fn between_i64(arr: arrays::ArrayBorrow<'_>, low: i64, high: i64) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let result: arrow_array::BooleanArray = int_arr.iter()
+                .map(|v| v.map(|x| x >= low && x <= high))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("between_i64 requires an Int64 array".to_string()))
+    }
+
+    fn between_f64(arr: arrays::ArrayBorrow<'_>, low: f64, high: f64) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(float_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Float64Array>() {
+            let result: arrow_array::BooleanArray = float_arr.iter()
+                .map(|v| v.map(|x| x >= low && x <= high))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("between_f64 requires a Float64 array".to_string()))
+    }
+
+    fn between_string(arr: arrays::ArrayBorrow<'_>, low: String, high: String) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let result: arrow_array::BooleanArray = str_arr.iter()
+                .map(|v| v.map(|x| x >= low.as_str() && x <= high.as_str()))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("between_string requires a String array".to_string()))
+    }
+
+    fn greatest(input_arrays: Vec<arrays::Array>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        use arrow_ord::cmp::gt;
+
+        if input_arrays.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("greatest requires at least one array".to_string()));
+        }
+        if input_arrays.len() == 1 {
+            let arr_impl = input_arrays[0].get::<ArrayImpl>();
+            return Ok(arrays::Array::new(ArrayImpl { inner: arr_impl.inner.clone() }));
+        }
+
+        // Start with first array and iteratively take greater values
+        let first = input_arrays[0].get::<ArrayImpl>();
+        let mut result = first.inner.clone();
+
+        for arr in input_arrays.iter().skip(1) {
+            let arr_impl = arr.get::<ArrayImpl>();
+            let gt_mask = gt(&result, &arr_impl.inner)
+                .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+            // Use zip: if result > arr_impl, keep result; else use arr_impl
+            result = arrow_select::zip::zip(&gt_mask, &result, &arr_impl.inner)
+                .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        }
+
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    fn least(input_arrays: Vec<arrays::Array>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        use arrow_ord::cmp::lt;
+
+        if input_arrays.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("least requires at least one array".to_string()));
+        }
+        if input_arrays.len() == 1 {
+            let arr_impl = input_arrays[0].get::<ArrayImpl>();
+            return Ok(arrays::Array::new(ArrayImpl { inner: arr_impl.inner.clone() }));
+        }
+
+        // Start with first array and iteratively take lesser values
+        let first = input_arrays[0].get::<ArrayImpl>();
+        let mut result = first.inner.clone();
+
+        for arr in input_arrays.iter().skip(1) {
+            let arr_impl = arr.get::<ArrayImpl>();
+            let lt_mask = lt(&result, &arr_impl.inner)
+                .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+            // Use zip: if result < arr_impl, keep result; else use arr_impl
+            result = arrow_select::zip::zip(&lt_mask, &result, &arr_impl.inner)
+                .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        }
+
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    fn nullif_eq(arr: arrays::ArrayBorrow<'_>, compare: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        use arrow_ord::cmp::eq;
+
+        let arr_impl = arr.get::<ArrayImpl>();
+        let compare_impl = compare.get::<ArrayImpl>();
+
+        // Compare arrays for equality
+        let eq_mask = eq(&arr_impl.inner, &compare_impl.inner)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        // Create null array of same type for null replacement
+        let null_arr = arrow_array::new_null_array(arr_impl.inner.data_type(), arr_impl.inner.len());
+
+        // Use zip: if equal, use null; else use original value
+        let result = arrow_select::zip::zip(&eq_mask, &null_arr, &arr_impl.inner)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    fn string_agg(arr: arrays::ArrayBorrow<'_>, separator: String) -> Result<Option<String>, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let non_null_values: Vec<&str> = str_arr.iter()
+                .filter_map(|v| v)
+                .collect();
+
+            if non_null_values.is_empty() {
+                return Ok(None);
+            }
+
+            return Ok(Some(non_null_values.join(&separator)));
+        }
+
+        if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::LargeStringArray>() {
+            let non_null_values: Vec<&str> = str_arr.iter()
+                .filter_map(|v| v)
+                .collect();
+
+            if non_null_values.is_empty() {
+                return Ok(None);
+            }
+
+            return Ok(Some(non_null_values.join(&separator)));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("string_agg requires a String array".to_string()))
     }
 
     // ========== Advanced Null Handling ==========
@@ -9841,6 +11318,9 @@ impl io::Guest for Component {
             if let Some(size) = opts.max_row_group_size {
                 props_builder = props_builder.set_max_row_group_size(size as usize);
             }
+            if let Some(page_size) = opts.data_page_size {
+                props_builder = props_builder.set_data_page_size_limit(page_size as usize);
+            }
             if opts.dictionary_enabled {
                 props_builder = props_builder.set_dictionary_enabled(true);
             }
@@ -9892,14 +11372,45 @@ impl io::Guest for Component {
             .map_err(to_io_error)?;
 
         let cursor = Cursor::new(data);
-        let reader = arrow_csv::ReaderBuilder::new(Arc::new(schema))
+        let mut builder = arrow_csv::ReaderBuilder::new(Arc::new(schema))
             .with_header(options.has_header)
-            .with_delimiter(options.delimiter)
-            .build(cursor)
-            .map_err(to_io_error)?;
+            .with_delimiter(options.delimiter);
 
+        // Apply optional settings
+        if let Some(quote) = options.quote {
+            builder = builder.with_quote(quote);
+        }
+        if let Some(escape) = options.escape {
+            builder = builder.with_escape(escape);
+        }
+
+        let reader = builder.build(cursor).map_err(to_io_error)?;
+
+        // Handle skip_rows by skipping initial batches/records
         let batches: Result<Vec<_>, _> = reader.collect();
-        let batches = batches.map_err(to_io_error)?;
+        let mut batches = batches.map_err(to_io_error)?;
+
+        // If skip_rows is specified, skip the appropriate number of rows
+        if let Some(skip) = options.skip_rows {
+            let mut rows_skipped = 0u64;
+            let mut start_batch = 0;
+            for (i, batch) in batches.iter().enumerate() {
+                if rows_skipped + (batch.num_rows() as u64) <= skip {
+                    rows_skipped += batch.num_rows() as u64;
+                    start_batch = i + 1;
+                } else {
+                    // Partial batch - slice it
+                    let offset = (skip - rows_skipped) as usize;
+                    if offset > 0 && offset < batch.num_rows() {
+                        batches[i] = batch.slice(offset, batch.num_rows() - offset);
+                    }
+                    start_batch = i;
+                    break;
+                }
+            }
+            batches = batches.into_iter().skip(start_batch).collect();
+        }
+
         Ok(batches
             .into_iter()
             .map(|b| record_batch::RecordBatch::new(RecordBatchImpl { inner: b }))

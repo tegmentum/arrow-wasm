@@ -222,6 +222,61 @@ interface arrays {
         finish: func() -> array;
     }
 
+    /// Builder for LargeList arrays (lists with 64-bit offsets for > 2GB total values)
+    resource large-list-array-builder {
+        /// Create with value data type
+        constructor(value-type: data-type);
+        append-null: func();
+        /// Append a list of i64 values
+        append-values-i64: func(values: list<s64>);
+        /// Append a list of f64 values
+        append-values-f64: func(values: list<f64>);
+        /// Append a list of string values
+        append-values-string: func(values: list<string>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for Struct arrays
+    resource struct-array-builder {
+        /// Create with field definitions
+        constructor(fields: list<tuple<string, data-type>>);
+        /// Append a value to a specific field (by index) - Int64
+        append-field-i64: func(field-index: u32, value: option<s64>) -> result<_, arrow-error>;
+        /// Append a value to a specific field - Float64
+        append-field-f64: func(field-index: u32, value: option<f64>) -> result<_, arrow-error>;
+        /// Append a value to a specific field - String
+        append-field-string: func(field-index: u32, value: option<string>) -> result<_, arrow-error>;
+        /// Append a value to a specific field - Boolean
+        append-field-bool: func(field-index: u32, value: option<bool>) -> result<_, arrow-error>;
+        /// Complete the current struct row (call after appending all fields)
+        append-row: func() -> result<_, arrow-error>;
+        /// Append a null struct
+        append-null: func();
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for Map arrays
+    resource map-array-builder {
+        /// Create with key and value types (keys are typically strings)
+        constructor(key-type: data-type, value-type: data-type);
+        /// Start a new map entry
+        start-map: func();
+        /// Append a key-value pair with string key and i64 value
+        append-entry-string-i64: func(key: string, value: option<s64>);
+        /// Append a key-value pair with string key and f64 value
+        append-entry-string-f64: func(key: string, value: option<f64>);
+        /// Append a key-value pair with string key and string value
+        append-entry-string-string: func(key: string, value: option<string>);
+        /// End current map entry
+        end-map: func();
+        /// Append a null map
+        append-null: func();
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
     /// ========== Temporal Type Builders ==========
 
     /// Builder for Date32 arrays (days since epoch)
@@ -443,6 +498,26 @@ interface arrays {
     /// Flatten a nested list array by one level
     list-flatten: func(arr: borrow<array>) -> result<array, arrow-error>;
 
+    /// Unnest/explode a list array into individual elements with row indices
+    /// Returns a record batch with columns: "index" (original row index) and "value" (unnested values)
+    unnest-list: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if list contains a value (returns boolean array)
+    list-contains-i64: func(arr: borrow<array>, value: s64) -> result<array, arrow-error>;
+
+    /// Check if list contains a float value
+    list-contains-f64: func(arr: borrow<array>, value: f64) -> result<array, arrow-error>;
+
+    /// Check if list contains a string value
+    list-contains-string: func(arr: borrow<array>, value: string) -> result<array, arrow-error>;
+
+    /// Get list element at index (returns array with values or nulls for out-of-bounds)
+    /// Negative indices count from the end of each list
+    list-element: func(arr: borrow<array>, index: s64) -> result<array, arrow-error>;
+
+    /// Create a list array from multiple arrays (each array becomes one list element)
+    arrays-to-list: func(arrays: list<array>) -> result<array, arrow-error>;
+
     /// ========== Struct Array Operations ==========
 
     /// Get a field from a struct array by index
@@ -453,6 +528,9 @@ interface arrays {
 
     /// Get all field names from a struct array
     struct-field-names: func(arr: borrow<array>) -> result<list<string>, arrow-error>;
+
+    /// Get the number of fields in a struct array
+    struct-num-fields: func(arr: borrow<array>) -> result<u32, arrow-error>;
 
     /// ========== Map Array Operations ==========
 
@@ -497,4 +575,27 @@ interface arrays {
 
     /// Get the values array from a run-end encoded array
     ree-values: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Array Generation Utilities ==========
+
+    /// Create an array filled with a repeated Int64 value
+    repeat-i64: func(value: s64, count: u64) -> array;
+
+    /// Create an array filled with a repeated Float64 value
+    repeat-f64: func(value: f64, count: u64) -> array;
+
+    /// Create an array filled with a repeated String value
+    repeat-string: func(value: string, count: u64) -> array;
+
+    /// Create an array filled with a repeated Boolean value
+    repeat-bool: func(value: bool, count: u64) -> array;
+
+    /// Generate a sequence of Int64 values from start to stop (exclusive) with step
+    range-i64: func(start: s64, stop: s64, step: s64) -> result<array, arrow-error>;
+
+    /// Generate a sequence of Float64 values from start to stop (exclusive) with step
+    range-f64: func(start: f64, stop: f64, step: f64) -> result<array, arrow-error>;
+
+    /// Generate a sequence of Date32 values from start to stop (exclusive) with step in days
+    range-date: func(start: s32, stop: s32, step: s32) -> result<array, arrow-error>;
 }

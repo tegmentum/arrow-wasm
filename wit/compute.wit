@@ -1,6 +1,6 @@
 /// Arrow compute kernels
 interface compute {
-    use types.{arrow-error, data-type};
+    use types.{arrow-error, data-type, time-unit};
     use arrays.{array};
     use record-batch.{record-batch};
 
@@ -535,6 +535,29 @@ interface compute {
     /// Select values based on condition (if condition then truthy else falsy)
     if-else: func(condition: borrow<array>, truthy: borrow<array>, falsy: borrow<array>) -> result<array, arrow-error>;
 
+    /// ========== SQL Functions ==========
+
+    /// BETWEEN: Check if values are in range [low, high] (inclusive)
+    between-i64: func(arr: borrow<array>, low: s64, high: s64) -> result<array, arrow-error>;
+
+    /// BETWEEN for float values
+    between-f64: func(arr: borrow<array>, low: f64, high: f64) -> result<array, arrow-error>;
+
+    /// BETWEEN for string values (lexicographic comparison)
+    between-string: func(arr: borrow<array>, low: string, high: string) -> result<array, arrow-error>;
+
+    /// GREATEST: Element-wise maximum across multiple arrays
+    greatest: func(arrays: list<array>) -> result<array, arrow-error>;
+
+    /// LEAST: Element-wise minimum across multiple arrays
+    least: func(arrays: list<array>) -> result<array, arrow-error>;
+
+    /// NULLIF with array comparison (set to null where arrays are equal)
+    nullif-eq: func(arr: borrow<array>, compare: borrow<array>) -> result<array, arrow-error>;
+
+    /// String aggregation (concatenate strings with separator)
+    string-agg: func(arr: borrow<array>, separator: string) -> result<option<string>, arrow-error>;
+
     /// ========== Advanced Null Handling ==========
 
     /// Forward fill nulls (carry last valid value forward)
@@ -899,6 +922,35 @@ interface compute {
 
     /// Create timestamp from epoch milliseconds
     timestamp-from-epoch-millis: func(arr: borrow<array>, timezone: option<string>) -> result<array, arrow-error>;
+
+    /// Check if date falls on a weekend (Saturday or Sunday)
+    date-is-weekend: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if date is in a leap year
+    date-is-leap-year: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get number of days in the month for each date
+    date-days-in-month: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Add interval to timestamp (months, days, and nanoseconds)
+    timestamp-add-interval: func(arr: borrow<array>, months: s32, days: s32, nanos: s64) -> result<array, arrow-error>;
+
+    /// Difference between timestamps in specified time unit
+    timestamp-diff: func(left: borrow<array>, right: borrow<array>, unit: time-unit) -> result<array, arrow-error>;
+
+    /// Create date from year, month, day arrays
+    make-date: func(year: borrow<array>, month: borrow<array>, day: borrow<array>) -> result<array, arrow-error>;
+
+    /// Create timestamp from date/time component arrays
+    make-timestamp: func(
+        year: borrow<array>,
+        month: borrow<array>,
+        day: borrow<array>,
+        hour: borrow<array>,
+        minute: borrow<array>,
+        second: borrow<array>,
+        timezone: option<string>
+    ) -> result<array, arrow-error>;
 
     /// ========== Interval Operations ==========
 

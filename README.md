@@ -107,6 +107,13 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 - timestamp-convert-tz (convert timestamp timezone)
 - timestamp-epoch-seconds, timestamp-epoch-millis (convert to epoch)
 - timestamp-from-epoch-seconds, timestamp-from-epoch-millis (create from epoch)
+- date-is-weekend (check if date falls on Saturday or Sunday)
+- date-is-leap-year (check if date is in a leap year)
+- date-days-in-month (get number of days in month)
+- timestamp-add-interval (add months, days, nanoseconds to timestamp)
+- timestamp-diff (difference between timestamps in specified unit)
+- make-date (create date from year, month, day arrays)
+- make-timestamp (create timestamp from date/time components)
 
 #### Interval Operations
 - make-interval-month-day-nano (create interval from parts)
@@ -133,6 +140,13 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 #### Conditional Operations
 - nullif (set values to null where condition is true)
 - if-else (select values based on boolean condition)
+
+#### SQL Functions
+- between-i64, between-f64, between-string (check if value in range)
+- greatest (element-wise maximum across arrays)
+- least (element-wise minimum across arrays)
+- nullif-eq (set to null where arrays are equal)
+- string-agg (concatenate strings with separator)
 
 #### Array Operations
 - concat (concatenate multiple arrays)
@@ -201,14 +215,16 @@ Core Arrow type definitions including data types, schema, field, and error types
 
 ### arrays
 Array resource with operations for creating, accessing, and manipulating arrays. Includes:
-- **List arrays**: list-lengths, list-values, list-flatten
+- **List arrays**: list-lengths, list-values, list-flatten, unnest-list, list-element, arrays-to-list
+- **List membership**: list-contains-i64, list-contains-f64, list-contains-string
 - **FixedSizeList arrays**: fixed-list-values, fixed-list-size
-- **Struct arrays**: struct-field, struct-field-by-name, struct-field-names
+- **Struct arrays**: struct-field, struct-field-by-name, struct-field-names, struct-num-fields
 - **Map arrays**: map-keys, map-values, map-offsets
 - **Union arrays**: union-type-ids, union-child, union-children
 - **Dictionary arrays**: dictionary-encode, dictionary-decode, dictionary-keys, dictionary-values
 - **Run-End Encoded (REE) arrays**: ree-encode, ree-decode, ree-run-ends, ree-values
-- **Builders**: Boolean, Int8-64, UInt8-64, Float32/64, String, Binary, Date32/64, Timestamp, Duration, Time32/64, Decimal128/256, LargeString, LargeBinary, FixedSizeBinary, List
+- **Builders**: Boolean, Int8-64, UInt8-64, Float32/64, String, Binary, Date32/64, Timestamp, Duration, Time32/64, Decimal128/256, LargeString, LargeBinary, FixedSizeBinary, List, LargeList, Struct, Map
+- **Array generation**: repeat-i64, repeat-f64, repeat-string, repeat-bool, range-i64, range-f64, range-date
 
 ### record-batch
 RecordBatch resource for columnar data with schema.
