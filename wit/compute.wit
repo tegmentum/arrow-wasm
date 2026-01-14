@@ -101,6 +101,24 @@ interface compute {
     /// Divide two decimal arrays with specified result precision and scale
     divide-decimal: func(left: borrow<array>, right: borrow<array>, result-precision: u8, result-scale: s8) -> result<array, arrow-error>;
 
+    /// Rescale decimal to new precision and scale
+    decimal-rescale: func(arr: borrow<array>, new-precision: u8, new-scale: s8) -> result<array, arrow-error>;
+
+    /// Round decimal to specified scale
+    decimal-round: func(arr: borrow<array>, scale: s8) -> result<array, arrow-error>;
+
+    /// Truncate decimal to specified scale
+    decimal-trunc: func(arr: borrow<array>, scale: s8) -> result<array, arrow-error>;
+
+    /// Absolute value for decimal arrays (preserves precision/scale)
+    decimal-abs: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Negate decimal array (preserves precision/scale)
+    decimal-negate: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Sum decimal array with result precision/scale
+    decimal-sum: func(arr: borrow<array>, result-precision: u8, result-scale: s8) -> result<array, arrow-error>;
+
     /// ========== Mathematical Functions ==========
 
     /// Absolute value
@@ -298,6 +316,15 @@ interface compute {
     /// Bitwise XOR with scalar
     bitwise-xor-scalar: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
 
+    /// Bitwise AND of all values in array (aggregate)
+    bitwise-and-agg: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
+
+    /// Bitwise OR of all values in array (aggregate)
+    bitwise-or-agg: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
+
+    /// Bitwise XOR of all values in array (aggregate)
+    bitwise-xor-agg: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
+
     /// Aggregation operations
 
     /// Sum of all values
@@ -394,6 +421,20 @@ interface compute {
 
     /// Safe cast that returns null for invalid conversions instead of error
     try-cast: func(arr: borrow<array>, to-type: data-type) -> result<array, arrow-error>;
+
+    /// Cast options for fine-grained control
+    record cast-options {
+        /// If true, return error on invalid conversions; if false, returns null for invalid values
+        safe: bool,
+        /// Optional format string for temporal parsing (strftime format)
+        format-string: option<string>,
+    }
+
+    /// Cast with options for fine-grained control
+    cast-with-options: func(arr: borrow<array>, to-type: data-type, options: cast-options) -> result<array, arrow-error>;
+
+    /// Parse strings to type with optional format
+    parse-string: func(arr: borrow<array>, to-type: data-type, format: option<string>) -> result<array, arrow-error>;
 
     /// String operations
 
@@ -1166,4 +1207,18 @@ interface compute {
 
     /// Check if left interval is greater than right element-wise
     interval-gt: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Array Sampling Operations ==========
+
+    /// Random sample of N elements from array
+    /// If N >= array length, returns all elements. Optional seed for reproducibility.
+    sample-n: func(arr: borrow<array>, n: u64, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// Random sample of fraction of array (0.0-1.0)
+    /// Optional seed for reproducibility.
+    sample-fraction: func(arr: borrow<array>, fraction: f64, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// Shuffle array elements randomly
+    /// Optional seed for reproducibility.
+    shuffle: func(arr: borrow<array>, seed: option<u64>) -> result<array, arrow-error>;
 }

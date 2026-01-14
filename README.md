@@ -53,6 +53,7 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 - bitwise-and, bitwise-or, bitwise-xor, bitwise-not
 - bitwise-and-not, bitwise-shift-left, bitwise-shift-right
 - Scalar operations (bitwise-and-scalar, bitwise-or-scalar, bitwise-xor-scalar)
+- Aggregate operations (bitwise-and-agg, bitwise-or-agg, bitwise-xor-agg)
 
 #### Aggregations
 - sum, min, max, count, mean
@@ -155,6 +156,16 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 - cast arrays between compatible types
 - can-cast-types (check if cast is possible)
 - try-cast (safe cast, returns null for invalid values)
+- cast-with-options (cast with safe mode and format options)
+- parse-string (parse strings to typed values with format)
+
+#### Decimal Operations
+- decimal-rescale (rescale to new precision/scale)
+- decimal-round (round to specified scale)
+- decimal-trunc (truncate to specified scale)
+- decimal-abs (absolute value preserving precision)
+- decimal-negate (negate preserving precision)
+- decimal-sum (sum with result precision/scale)
 
 #### Conditional Operations
 - nullif (set values to null where condition is true)
@@ -179,6 +190,11 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 #### Arrow-Row Operations
 - row-distinct (efficient multi-column distinct)
 - row-deduplicate (remove duplicates preserving first occurrence)
+
+#### Array Sampling
+- sample-n (random sample of N elements)
+- sample-fraction (random sample by fraction 0.0-1.0)
+- shuffle (randomly shuffle array elements)
 
 ### Flight Data Exchange
 - Encode/decode record batches to/from Flight format
