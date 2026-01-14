@@ -686,6 +686,10 @@ interface compute {
         left-semi,
         /// Left anti join - rows from left that have no match in right
         left-anti,
+        /// Right semi join - rows from right that have match in left
+        right-semi,
+        /// Right anti join - rows from right that have no match in left
+        right-anti,
     }
 
     /// Join two record batches on specified columns
@@ -701,6 +705,27 @@ interface compute {
     cross-join: func(
         left: borrow<record-batch>,
         %right: borrow<record-batch>
+    ) -> result<record-batch, arrow-error>;
+
+    /// Hash join two record batches on specified columns
+    /// Returns a new record batch with columns from both inputs
+    hash-join: func(
+        left: borrow<record-batch>,
+        right: borrow<record-batch>,
+        left-on: list<string>,
+        right-on: list<string>,
+        join-type: join-type
+    ) -> result<record-batch, arrow-error>;
+
+    /// Hash join with suffix for duplicate column names
+    hash-join-with-suffix: func(
+        left: borrow<record-batch>,
+        right: borrow<record-batch>,
+        left-on: list<string>,
+        right-on: list<string>,
+        join-type: join-type,
+        left-suffix: string,
+        right-suffix: string
     ) -> result<record-batch, arrow-error>;
 
     /// ========== Arrow-Row Operations ==========
@@ -1221,4 +1246,178 @@ interface compute {
     /// Shuffle array elements randomly
     /// Optional seed for reproducibility.
     shuffle: func(arr: borrow<array>, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// ========== Extended GroupBy Operations ==========
+
+    /// Group by with HAVING filter (post-aggregation filter)
+    /// The having-column should be a boolean column in the aggregation result
+    group-by-having: func(
+        batch: borrow<record-batch>,
+        group-columns: list<u32>,
+        aggregates: list<aggregate-spec>,
+        having-column: string
+    ) -> result<record-batch, arrow-error>;
+
+    /// Filter aggregate - aggregate with predicate (SQL FILTER clause)
+    /// Only aggregates values where filter is true
+    filter-aggregate: func(
+        arr: borrow<array>,
+        function: agg-function,
+        filter: borrow<array>
+    ) -> result<array, arrow-error>;
+
+    /// ========== Date/Time Binning Operations ==========
+
+    /// Time bin unit for bucketing operations
+    enum time-bin-unit {
+        /// Second
+        second,
+        /// Minute
+        minute,
+        /// Hour
+        hour,
+        /// Day
+        day,
+        /// Week
+        week,
+        /// Month
+        month,
+        /// Quarter
+        quarter,
+        /// Year
+        year,
+    }
+
+    /// Bin timestamps to specified interval
+    /// For example, bin to 15-minute intervals or 1-hour intervals
+    timestamp-bin: func(
+        arr: borrow<array>,
+        bin-size: u32,
+        bin-unit: time-bin-unit,
+        origin: option<s64>
+    ) -> result<array, arrow-error>;
+
+    /// Bin dates to specified interval
+    date-bin: func(
+        arr: borrow<array>,
+        bin-size: u32,
+        bin-unit: time-bin-unit
+    ) -> result<array, arrow-error>;
+
+    /// Truncate timestamp/date to start of period (week, month, quarter, year)
+    date-trunc-to: func(
+        arr: borrow<array>,
+        unit: time-bin-unit
+    ) -> result<array, arrow-error>;
+
+    /// ========== Approximate Algorithms ==========
+
+    /// Create HyperLogLog++ sketch for cardinality estimation
+    /// Precision should be between 4 and 18 (default 14)
+    hll-create: func(arr: borrow<array>, precision: u8) -> result<list<u8>, arrow-error>;
+
+    /// Merge multiple HLL sketches
+    hll-merge: func(sketches: list<list<u8>>) -> result<list<u8>, arrow-error>;
+
+    /// Estimate cardinality from HLL sketch
+    hll-estimate: func(sketch: list<u8>) -> result<u64, arrow-error>;
+
+    /// Create Count-Min Sketch for frequency estimation
+    /// width: number of counters per row (larger = more accurate)
+    /// depth: number of hash functions (larger = lower collision probability)
+    cms-create: func(arr: borrow<array>, width: u32, depth: u32) -> result<list<u8>, arrow-error>;
+
+    /// Query frequency from Count-Min Sketch for i64 values
+    cms-query-i64: func(sketch: list<u8>, value: s64) -> result<u64, arrow-error>;
+
+    /// Query frequency from Count-Min Sketch for string values
+    cms-query-string: func(sketch: list<u8>, value: string) -> result<u64, arrow-error>;
+
+    /// Find top-k most frequent elements in array
+    topk-frequent: func(arr: borrow<array>, k: u32) -> result<array, arrow-error>;
+
+    /// ========== Rolling Window Extensions ==========
+
+    /// Exponential moving average (EMA)
+    /// alpha is the smoothing factor (0.0-1.0): result[i] = alpha * value[i] + (1-alpha) * result[i-1]
+    rolling-ema: func(arr: borrow<array>, alpha: f64) -> result<array, arrow-error>;
+
+    /// Weighted moving average with custom weights
+    /// weights are applied in order [w_0, w_1, ... w_n-1] where w_n-1 applies to current value
+    rolling-weighted-mean: func(arr: borrow<array>, weights: list<f64>) -> result<array, arrow-error>;
+
+    /// Bollinger bands: returns (lower-band, middle-band, upper-band)
+    /// middle-band is rolling mean, lower/upper are mean +/- (num-std * stddev)
+    bollinger-bands: func(
+        arr: borrow<array>,
+        window: u64,
+        num-std: f64
+    ) -> result<tuple<array, array, array>, arrow-error>;
+
+    /// Rate of change as percentage: (current - prev) / prev * 100
+    rate-of-change: func(arr: borrow<array>, periods: u64) -> result<array, arrow-error>;
+
+    /// Momentum: difference from N periods ago (current - prev)
+    momentum: func(arr: borrow<array>, periods: u64) -> result<array, arrow-error>;
+
+    /// ========== String Fuzzy Matching ==========
+
+    /// Levenshtein edit distance between two string arrays (element-wise)
+    string-levenshtein: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Jaro-Winkler similarity between two string arrays (0.0-1.0, element-wise)
+    string-jaro-winkler: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Soundex phonetic encoding
+    string-soundex: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// N-gram tokenization - returns List<Utf8> array of n-grams per string
+    string-ngrams: func(arr: borrow<array>, n: u32) -> result<array, arrow-error>;
+
+    /// Fuzzy match: returns indices of strings that match pattern within threshold
+    /// algorithm: "levenshtein" or "jaro-winkler"
+    /// threshold: max distance for levenshtein, min similarity for jaro-winkler
+    string-fuzzy-match: func(
+        arr: borrow<array>,
+        pattern: string,
+        threshold: f64,
+        algorithm: string
+    ) -> result<array, arrow-error>;
+
+    /// ========== Geospatial Basics ==========
+
+    /// Haversine distance between lat/lon points (in meters)
+    geo-haversine-distance: func(
+        lat1: borrow<array>,
+        lon1: borrow<array>,
+        lat2: borrow<array>,
+        lon2: borrow<array>
+    ) -> result<array, arrow-error>;
+
+    /// Check if points are within radius of reference point (returns boolean array)
+    geo-within-radius: func(
+        lat: borrow<array>,
+        lon: borrow<array>,
+        ref-lat: f64,
+        ref-lon: f64,
+        radius-meters: f64
+    ) -> result<array, arrow-error>;
+
+    /// Bounding box filter (returns boolean array)
+    geo-in-bbox: func(
+        lat: borrow<array>,
+        lon: borrow<array>,
+        min-lat: f64,
+        min-lon: f64,
+        max-lat: f64,
+        max-lon: f64
+    ) -> result<array, arrow-error>;
+
+    /// Grid cell assignment (geohash-like, returns string array)
+    /// precision: 1-12, higher = more precise (smaller cells)
+    geo-grid-cell: func(
+        lat: borrow<array>,
+        lon: borrow<array>,
+        precision: u8
+    ) -> result<array, arrow-error>;
 }

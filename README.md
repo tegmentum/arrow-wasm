@@ -196,6 +196,57 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 - sample-fraction (random sample by fraction 0.0-1.0)
 - shuffle (randomly shuffle array elements)
 
+#### Hash Join Operations
+- hash-join (join batches on key columns: inner, left, right, full, semi, anti)
+- hash-join-with-suffix (join with custom column name suffixes)
+
+#### GroupBy Aggregation
+- group-by (group by columns with multiple aggregations)
+- group-by-having (group by with HAVING filter)
+- filter-aggregate (aggregate with filter: SUM/MIN/MAX/COUNT/MEAN FILTER WHERE)
+
+#### Date/Time Binning
+- timestamp-bin (bin timestamps to intervals: 5-minute, 1-hour, etc.)
+- date-bin (bin dates to intervals)
+- date-trunc-to (truncate to period start: week, month, quarter, year)
+
+#### Approximate Algorithms
+- hll-create, hll-merge, hll-estimate (HyperLogLog++ cardinality estimation)
+- cms-create, cms-query-i64, cms-query-string (Count-Min Sketch frequency)
+- topk-frequent (top-k most frequent elements)
+
+#### Rolling Window Extensions
+- rolling-ema (exponential moving average)
+- rolling-weighted-mean (custom weight moving average)
+- bollinger-bands (statistical bands: lower, middle, upper)
+- rate-of-change (percentage change over periods)
+- momentum (absolute change over periods)
+
+#### String Fuzzy Matching
+- string-levenshtein (edit distance)
+- string-jaro-winkler (similarity score 0.0-1.0)
+- string-soundex (phonetic encoding)
+- string-ngrams (n-gram tokenization)
+- string-fuzzy-match (find matches within threshold)
+
+#### Geospatial Operations
+- geo-haversine-distance (great-circle distance in meters)
+- geo-within-radius (point within radius filter)
+- geo-in-bbox (bounding box filter)
+- geo-grid-cell (geohash-like grid encoding)
+
+### RecordBatch Operations
+
+#### Batch Set Operations
+- except-batches (EXCEPT/EXCEPT ALL)
+- intersect-batches (INTERSECT/INTERSECT ALL)
+- union-batches (UNION/UNION ALL)
+
+#### Pivot/Unpivot
+- pivot (long to wide format with aggregation)
+- unpivot (wide to long format)
+- stack-arrays (vertically stack arrays with labels)
+
 ### Flight Data Exchange
 - Encode/decode record batches to/from Flight format
 - Create and manage Flight descriptors and endpoints

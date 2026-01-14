@@ -91,4 +91,60 @@ interface record-batch {
 
     /// Rename columns in a record batch
     record-batch-rename-columns: func(batch: borrow<record-batch>, new-names: list<string>) -> result<record-batch, arrow-error>;
+
+    /// ========== Batch Set Operations ==========
+
+    /// EXCEPT operation - rows in left but not in right
+    /// If all-rows is true, preserves duplicates (EXCEPT ALL)
+    /// If all-rows is false, removes duplicates (EXCEPT DISTINCT)
+    except-batches: func(
+        left: borrow<record-batch>,
+        %right: borrow<record-batch>,
+        all-rows: bool
+    ) -> result<record-batch, arrow-error>;
+
+    /// INTERSECT operation - rows in both left and right
+    /// If all-rows is true, preserves duplicates (INTERSECT ALL)
+    /// If all-rows is false, removes duplicates (INTERSECT DISTINCT)
+    intersect-batches: func(
+        left: borrow<record-batch>,
+        %right: borrow<record-batch>,
+        all-rows: bool
+    ) -> result<record-batch, arrow-error>;
+
+    /// UNION with optional deduplication
+    /// If all-rows is true, keeps all rows (UNION ALL)
+    /// If all-rows is false, removes duplicates (UNION DISTINCT)
+    union-batches: func(
+        batches: list<record-batch>,
+        all-rows: bool
+    ) -> result<record-batch, arrow-error>;
+
+    /// ========== Pivot/Unpivot Operations ==========
+
+    /// Pivot (long to wide format)
+    /// Transforms rows into columns based on values in pivot-column
+    pivot: func(
+        batch: borrow<record-batch>,
+        index-columns: list<string>,
+        pivot-column: string,
+        value-column: string,
+        agg-function: string
+    ) -> result<record-batch, arrow-error>;
+
+    /// Unpivot/Melt (wide to long format)
+    /// Transforms columns into rows
+    unpivot: func(
+        batch: borrow<record-batch>,
+        id-columns: list<string>,
+        value-columns: list<string>,
+        variable-name: string,
+        value-name: string
+    ) -> result<record-batch, arrow-error>;
+
+    /// Stack arrays vertically with labels
+    stack-arrays: func(
+        arrays: list<array>,
+        labels: list<string>
+    ) -> result<record-batch, arrow-error>;
 }
