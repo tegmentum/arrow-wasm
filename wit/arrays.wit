@@ -174,6 +174,54 @@ interface arrays {
         finish: func() -> array;
     }
 
+    /// ========== Large String/Binary Builders ==========
+
+    /// Builder for LargeString arrays (supports strings > 2GB total)
+    resource large-string-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> large-string-array-builder;
+        append-value: func(value: string);
+        append-null: func();
+        append-option: func(value: option<string>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for LargeBinary arrays (supports binary data > 2GB total)
+    resource large-binary-array-builder {
+        constructor();
+        with-capacity: static func(capacity: u64) -> large-binary-array-builder;
+        append-value: func(value: list<u8>);
+        append-null: func();
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for FixedSizeBinary arrays
+    resource fixed-size-binary-array-builder {
+        /// Create with specified byte width
+        constructor(byte-width: u32);
+        append-value: func(value: list<u8>) -> result<_, arrow-error>;
+        append-null: func();
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
+    /// Builder for List arrays (variable-length lists of values)
+    resource list-array-builder {
+        /// Create with value data type
+        constructor(value-type: data-type);
+        append-null: func();
+        /// Append a list of i64 values
+        append-values-i64: func(values: list<s64>);
+        /// Append a list of f64 values
+        append-values-f64: func(values: list<f64>);
+        /// Append a list of string values
+        append-values-string: func(values: list<string>);
+        len: func() -> u64;
+        finish: func() -> array;
+    }
+
     /// ========== Temporal Type Builders ==========
 
     /// Builder for Date32 arrays (days since epoch)
@@ -435,4 +483,18 @@ interface arrays {
 
     /// Get all child arrays from a union
     union-children: func(arr: borrow<array>) -> result<list<array>, arrow-error>;
+
+    /// ========== Run-End Encoded Array Operations ==========
+
+    /// Encode an array as run-end encoded (compresses repeated values)
+    ree-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Decode a run-end encoded array to its plain form
+    ree-decode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get the run ends array from a run-end encoded array
+    ree-run-ends: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get the values array from a run-end encoded array
+    ree-values: func(arr: borrow<array>) -> result<array, arrow-error>;
 }

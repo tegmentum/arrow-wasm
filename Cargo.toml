@@ -48,6 +48,9 @@ base64 = "0.22"
 # Regex support for string operations
 regex = "1.10"
 
+# Numeric traits for gcd/lcm
+num-traits = "0.2"
+
 # Component model bindings (compatible with Wasmtime 40.x)
 wit-bindgen = "0.51"
 wit-bindgen-rt = "0.44"

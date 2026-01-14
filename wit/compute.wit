@@ -148,6 +148,38 @@ interface compute {
     /// Sign function (-1, 0, or 1)
     sign: func(arr: borrow<array>) -> result<array, arrow-error>;
 
+    /// ========== Extended Mathematical Functions ==========
+
+    /// Convert radians to degrees
+    degrees: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Convert degrees to radians
+    radians: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Euclidean distance sqrt(x^2 + y^2)
+    hypot: func(x: borrow<array>, y: borrow<array>) -> result<array, arrow-error>;
+
+    /// exp(x) - 1, accurate for small x values
+    expm1: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ln(1 + x), accurate for small x values
+    log1p: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Copy sign from sign array to magnitude array
+    copysign: func(magnitude: borrow<array>, sign: borrow<array>) -> result<array, arrow-error>;
+
+    /// Element-wise maximum of two arrays (not aggregate max)
+    fmax: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Element-wise minimum of two arrays (not aggregate min)
+    fmin: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Greatest common divisor (integers only)
+    gcd: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Least common multiple (integers only)
+    lcm: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
     /// ========== Trigonometric Functions ==========
 
     /// Sine
@@ -357,6 +389,12 @@ interface compute {
     /// Cast an array to a different data type
     cast: func(arr: borrow<array>, to-type: data-type) -> result<array, arrow-error>;
 
+    /// Check if casting between two types is possible
+    can-cast-types: func(from-type: data-type, to-type: data-type) -> bool;
+
+    /// Safe cast that returns null for invalid conversions instead of error
+    try-cast: func(arr: borrow<array>, to-type: data-type) -> result<array, arrow-error>;
+
     /// String operations
 
     /// Get string length
@@ -430,6 +468,32 @@ interface compute {
 
     /// Split strings on a delimiter (returns list array)
     string-split: func(arr: borrow<array>, delimiter: string) -> result<array, arrow-error>;
+
+    /// ========== Advanced String Operations ==========
+
+    /// Get first N characters from each string
+    string-left: func(arr: borrow<array>, n: u64) -> result<array, arrow-error>;
+
+    /// Get last N characters from each string
+    string-right: func(arr: borrow<array>, n: u64) -> result<array, arrow-error>;
+
+    /// Capitalize first letter of each word (title case)
+    string-initcap: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Find position of substring (1-indexed, 0 if not found)
+    string-position: func(arr: borrow<array>, substring: string) -> result<array, arrow-error>;
+
+    /// Find position of substring starting from offset (1-indexed, 0 if not found)
+    string-position-from: func(arr: borrow<array>, substring: string, start: u64) -> result<array, arrow-error>;
+
+    /// Character-by-character translation (replace chars in from with corresponding chars in to)
+    string-translate: func(arr: borrow<array>, from-chars: string, to-chars: string) -> result<array, arrow-error>;
+
+    /// Concatenate string arrays with separator
+    string-concat-ws: func(separator: string, arrays: list<array>) -> result<array, arrow-error>;
+
+    /// Extract part from split string (1-indexed, like SQL SPLIT_PART)
+    string-split-part: func(arr: borrow<array>, delimiter: string, part: u32) -> result<array, arrow-error>;
 
     /// ========== Array Generation ==========
 
@@ -567,6 +631,20 @@ interface compute {
         %right: borrow<record-batch>
     ) -> result<record-batch, arrow-error>;
 
+    /// ========== Arrow-Row Operations ==========
+
+    /// Get distinct rows based on specified columns (efficient using row format)
+    row-distinct: func(
+        batch: borrow<record-batch>,
+        columns: list<string>
+    ) -> result<record-batch, arrow-error>;
+
+    /// Remove duplicate rows preserving first occurrence (efficient using row format)
+    row-deduplicate: func(
+        batch: borrow<record-batch>,
+        columns: list<string>
+    ) -> result<record-batch, arrow-error>;
+
     /// ========== Additional Statistics ==========
 
     /// Mode (most frequent value) - returns array of mode values
@@ -593,6 +671,39 @@ interface compute {
     /// Pearson correlation coefficient between two arrays
     correlation: func(x: borrow<array>, y: borrow<array>) -> result<option<f64>, arrow-error>;
 
+    /// ========== Extended Statistical Functions ==========
+
+    /// Index of maximum value (argmax), returns None if array is empty
+    index-of-max: func(arr: borrow<array>) -> result<option<u64>, arrow-error>;
+
+    /// Index of minimum value (argmin), returns None if array is empty
+    index-of-min: func(arr: borrow<array>) -> result<option<u64>, arrow-error>;
+
+    /// Check if array values are monotonically increasing
+    is-monotonic-increasing: func(arr: borrow<array>) -> result<bool, arrow-error>;
+
+    /// Check if array values are monotonically decreasing
+    is-monotonic-decreasing: func(arr: borrow<array>) -> result<bool, arrow-error>;
+
+    /// Get top N values (largest values, sorted descending)
+    top-n: func(arr: borrow<array>, n: u64) -> result<array, arrow-error>;
+
+    /// Get bottom N values (smallest values, sorted ascending)
+    bottom-n: func(arr: borrow<array>, n: u64) -> result<array, arrow-error>;
+
+    /// Get indices of top N values
+    top-n-indices: func(arr: borrow<array>, n: u64) -> result<array, arrow-error>;
+
+    /// Get indices of bottom N values
+    bottom-n-indices: func(arr: borrow<array>, n: u64) -> result<array, arrow-error>;
+
+    /// Shannon entropy of value distribution (in bits)
+    entropy: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Create histogram with specified number of bins
+    /// Returns record batch with columns: bin_min, bin_max, count
+    histogram: func(arr: borrow<array>, bins: u32) -> result<record-batch, arrow-error>;
+
     /// Options for rolling/moving window calculations
     record rolling-options {
         /// Size of the rolling window
@@ -617,6 +728,23 @@ interface compute {
 
     /// Rolling standard deviation
     rolling-std: func(arr: borrow<array>, options: rolling-options) -> result<array, arrow-error>;
+
+    /// ========== Cumulative/Scan Operations ==========
+
+    /// Cumulative sum (running total)
+    cumulative-sum: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Cumulative product (running product)
+    cumulative-prod: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Cumulative minimum (running minimum)
+    cumulative-min: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Cumulative maximum (running maximum)
+    cumulative-max: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Cumulative count (running count of non-null values)
+    cumulative-count: func(arr: borrow<array>) -> result<array, arrow-error>;
 
     /// ========== String Distance Functions ==========
 

@@ -32,6 +32,13 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 - Scalar operations (add-scalar-i64, add-scalar-f64, multiply-scalar-i64, multiply-scalar-f64)
 - Wrapping arithmetic (add-wrapping, subtract-wrapping, multiply-wrapping, negate-wrapping)
 
+#### Mathematical Functions
+- Basic: abs, round, ceil, floor, trunc, sqrt, cbrt, pow, exp, ln, log2, log10, sign
+- Extended: degrees, radians, hypot, expm1, log1p, copysign
+- Element-wise: fmax, fmin (element-wise max/min of two arrays)
+- Integer: gcd, lcm (greatest common divisor, least common multiple)
+- Trigonometric: sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh
+
 #### Comparison Operations
 - Compare arrays (eq, not-eq, lt, lt-eq, gt, gt-eq)
 - Compare with scalars (i64, f64, string)
@@ -55,6 +62,14 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 - first-value, last-value
 - min-string, max-string, min-binary, max-binary
 
+#### Extended Statistics
+- index-of-max, index-of-min (argmax/argmin)
+- is-monotonic-increasing, is-monotonic-decreasing
+- top-n, bottom-n (largest/smallest N values)
+- top-n-indices, bottom-n-indices (indices of largest/smallest N values)
+- entropy (Shannon entropy of value distribution)
+- histogram (create histogram with specified bins)
+
 #### Selection & Filtering
 - filter, take
 - sort, sort-indices, lexsort
@@ -67,6 +82,11 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 - string-contains, string-starts-with, string-ends-with
 - string-concat, concat-elements, substring
 - SQL LIKE: string-like, string-ilike, string-nlike, string-nilike
+- string-left, string-right (get first/last N characters)
+- string-initcap (title case)
+- string-position, string-position-from (find substring)
+- string-translate (character translation)
+- string-concat-ws, string-split-part (SQL-style)
 
 #### Regex Operations
 - regex-match, regex-extract, regex-extract-group
@@ -98,8 +118,17 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 - first-value, last-value, nth-value
 - Running aggregates: sum, avg, min, max, count
 
+#### Cumulative/Scan Operations
+- cumulative-sum (running total)
+- cumulative-prod (running product)
+- cumulative-min (running minimum)
+- cumulative-max (running maximum)
+- cumulative-count (running count of non-null values)
+
 #### Type Casting
 - cast arrays between compatible types
+- can-cast-types (check if cast is possible)
+- try-cast (safe cast, returns null for invalid values)
 
 #### Conditional Operations
 - nullif (set values to null where condition is true)
@@ -113,6 +142,10 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 #### Partitioning Operations
 - partition (group consecutive equal values)
 - rank (compute rank of values)
+
+#### Arrow-Row Operations
+- row-distinct (efficient multi-column distinct)
+- row-deduplicate (remove duplicates preserving first occurrence)
 
 ### Flight Data Exchange
 - Encode/decode record batches to/from Flight format
@@ -174,6 +207,8 @@ Array resource with operations for creating, accessing, and manipulating arrays.
 - **Map arrays**: map-keys, map-values, map-offsets
 - **Union arrays**: union-type-ids, union-child, union-children
 - **Dictionary arrays**: dictionary-encode, dictionary-decode, dictionary-keys, dictionary-values
+- **Run-End Encoded (REE) arrays**: ree-encode, ree-decode, ree-run-ends, ree-values
+- **Builders**: Boolean, Int8-64, UInt8-64, Float32/64, String, Binary, Date32/64, Timestamp, Duration, Time32/64, Decimal128/256, LargeString, LargeBinary, FixedSizeBinary, List
 
 ### record-batch
 RecordBatch resource for columnar data with schema.

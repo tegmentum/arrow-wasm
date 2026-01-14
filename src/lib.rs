@@ -721,6 +721,10 @@ impl arrays::Guest for Component {
     type Float64ArrayBuilder = Float64ArrayBuilderImpl;
     type StringArrayBuilder = StringArrayBuilderImpl;
     type BinaryArrayBuilder = BinaryArrayBuilderImpl;
+    type LargeStringArrayBuilder = LargeStringArrayBuilderImpl;
+    type LargeBinaryArrayBuilder = LargeBinaryArrayBuilderImpl;
+    type FixedSizeBinaryArrayBuilder = FixedSizeBinaryArrayBuilderImpl;
+    type ListArrayBuilder = ListArrayBuilderImpl;
     type Date32ArrayBuilder = Date32ArrayBuilderImpl;
     type Date64ArrayBuilder = Date64ArrayBuilderImpl;
     type TimestampArrayBuilder = TimestampArrayBuilderImpl;
@@ -1453,6 +1457,190 @@ impl arrays::Guest for Component {
 
         Err(arrays::ArrowError::InvalidArgument("union_children requires a union array".to_string()))
     }
+
+    // ========== Run-End Encoded Array Operations ==========
+
+    fn ree_encode(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, arrays::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        // Int32 arrays
+        if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            if typed_arr.len() == 0 {
+                let run_ends = arrow_array::Int64Array::from(Vec::<i64>::new());
+                let values = arrow_array::Int32Array::from(Vec::<i32>::new());
+                let ree = arrow_array::RunArray::<arrow_array::types::Int64Type>::try_new(&run_ends, &values)
+                    .map_err(|e| arrays::ArrowError::ComputeError(e.to_string()))?;
+                return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(ree) }));
+            }
+
+            let mut run_ends: Vec<i64> = Vec::new();
+            let mut values: Vec<Option<i32>> = Vec::new();
+            let mut prev_val: Option<i32> = None;
+
+            for (i, val) in typed_arr.iter().enumerate() {
+                if i == 0 {
+                    prev_val = val;
+                } else if val != prev_val {
+                    run_ends.push(i as i64);
+                    values.push(prev_val);
+                    prev_val = val;
+                }
+            }
+            run_ends.push(typed_arr.len() as i64);
+            values.push(prev_val);
+
+            let run_ends_arr = arrow_array::Int64Array::from(run_ends);
+            let values_arr: arrow_array::Int32Array = values.into_iter().collect();
+            let ree = arrow_array::RunArray::<arrow_array::types::Int64Type>::try_new(&run_ends_arr, &values_arr)
+                .map_err(|e| arrays::ArrowError::ComputeError(e.to_string()))?;
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(ree) }));
+        }
+
+        // Int64 arrays
+        if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            if typed_arr.len() == 0 {
+                let run_ends = arrow_array::Int64Array::from(Vec::<i64>::new());
+                let values = arrow_array::Int64Array::from(Vec::<i64>::new());
+                let ree = arrow_array::RunArray::<arrow_array::types::Int64Type>::try_new(&run_ends, &values)
+                    .map_err(|e| arrays::ArrowError::ComputeError(e.to_string()))?;
+                return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(ree) }));
+            }
+
+            let mut run_ends: Vec<i64> = Vec::new();
+            let mut values: Vec<Option<i64>> = Vec::new();
+            let mut prev_val: Option<i64> = None;
+
+            for (i, val) in typed_arr.iter().enumerate() {
+                if i == 0 {
+                    prev_val = val;
+                } else if val != prev_val {
+                    run_ends.push(i as i64);
+                    values.push(prev_val);
+                    prev_val = val;
+                }
+            }
+            run_ends.push(typed_arr.len() as i64);
+            values.push(prev_val);
+
+            let run_ends_arr = arrow_array::Int64Array::from(run_ends);
+            let values_arr: arrow_array::Int64Array = values.into_iter().collect();
+            let ree = arrow_array::RunArray::<arrow_array::types::Int64Type>::try_new(&run_ends_arr, &values_arr)
+                .map_err(|e| arrays::ArrowError::ComputeError(e.to_string()))?;
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(ree) }));
+        }
+
+        // String arrays
+        if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            if typed_arr.len() == 0 {
+                let run_ends = arrow_array::Int64Array::from(Vec::<i64>::new());
+                let values = arrow_array::StringArray::from(Vec::<Option<&str>>::new());
+                let ree = arrow_array::RunArray::<arrow_array::types::Int64Type>::try_new(&run_ends, &values)
+                    .map_err(|e| arrays::ArrowError::ComputeError(e.to_string()))?;
+                return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(ree) }));
+            }
+
+            let mut run_ends: Vec<i64> = Vec::new();
+            let mut values: Vec<Option<String>> = Vec::new();
+            let mut prev_val: Option<&str> = None;
+
+            for (i, val) in typed_arr.iter().enumerate() {
+                if i == 0 {
+                    prev_val = val;
+                } else if val != prev_val {
+                    run_ends.push(i as i64);
+                    values.push(prev_val.map(|s| s.to_string()));
+                    prev_val = val;
+                }
+            }
+            run_ends.push(typed_arr.len() as i64);
+            values.push(prev_val.map(|s| s.to_string()));
+
+            let run_ends_arr = arrow_array::Int64Array::from(run_ends);
+            let values_arr: arrow_array::StringArray = values.into_iter().collect();
+            let ree = arrow_array::RunArray::<arrow_array::types::Int64Type>::try_new(&run_ends_arr, &values_arr)
+                .map_err(|e| arrays::ArrowError::ComputeError(e.to_string()))?;
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(ree) }));
+        }
+
+        Err(arrays::ArrowError::NotImplemented("ree_encode only supports Int32, Int64, String arrays".to_string()))
+    }
+
+    fn ree_decode(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, arrays::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        // Try to decode Int64 run-end encoded array
+        if let Some(ree_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::RunArray<arrow_array::types::Int64Type>>() {
+            let run_ends = ree_arr.run_ends();
+            let values = ree_arr.values();
+            let len = ree_arr.len();
+
+            // Build indices to expand the values
+            let mut indices: Vec<u64> = Vec::with_capacity(len);
+            let run_ends_values = run_ends.values();
+
+            for (run_idx, &end) in run_ends_values.iter().enumerate() {
+                let start = if run_idx == 0 { 0 } else { run_ends_values[run_idx - 1] as usize };
+                for _ in start..(end as usize) {
+                    indices.push(run_idx as u64);
+                }
+            }
+
+            let indices_arr: arrow_array::UInt64Array = indices.into_iter().map(Some).collect();
+            let decoded = arrow_select::take::take(values.as_ref(), &indices_arr, None)
+                .map_err(|e| arrays::ArrowError::ComputeError(e.to_string()))?;
+            return Ok(arrays::Array::new(ArrayImpl { inner: decoded }));
+        }
+
+        Err(arrays::ArrowError::NotImplemented("ree_decode only supports Int64 run-end encoded arrays".to_string()))
+    }
+
+    fn ree_run_ends(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, arrays::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(ree_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::RunArray<arrow_array::types::Int64Type>>() {
+            let run_ends = ree_arr.run_ends();
+            // Convert RunEndBuffer to Int64Array
+            let values: Vec<i64> = run_ends.values().iter().copied().collect();
+            let result = arrow_array::Int64Array::from(values);
+            return Ok(arrays::Array::new(ArrayImpl {
+                inner: Arc::new(result)
+            }));
+        }
+
+        if let Some(ree_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::RunArray<arrow_array::types::Int32Type>>() {
+            let run_ends = ree_arr.run_ends();
+            // Convert RunEndBuffer to Int32Array
+            let values: Vec<i32> = run_ends.values().iter().copied().collect();
+            let result = arrow_array::Int32Array::from(values);
+            return Ok(arrays::Array::new(ArrayImpl {
+                inner: Arc::new(result)
+            }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("ree_run_ends requires a run-end encoded array".to_string()))
+    }
+
+    fn ree_values(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, arrays::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(ree_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::RunArray<arrow_array::types::Int64Type>>() {
+            let values = ree_arr.values();
+            return Ok(arrays::Array::new(ArrayImpl {
+                inner: values.clone()
+            }));
+        }
+
+        if let Some(ree_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::RunArray<arrow_array::types::Int32Type>>() {
+            let values = ree_arr.values();
+            return Ok(arrays::Array::new(ArrayImpl {
+                inner: values.clone()
+            }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("ree_values requires a run-end encoded array".to_string()))
+    }
 }
 
 struct ArrayImpl {
@@ -1630,6 +1818,235 @@ impl arrays::GuestBinaryArrayBuilder for BinaryArrayBuilderImpl {
         arrays::Array::new(ArrayImpl {
             inner: Arc::new(self.inner.borrow_mut().finish()),
         })
+    }
+}
+
+// ============================================================================
+// Large String/Binary and FixedSize Builders
+// ============================================================================
+
+struct LargeStringArrayBuilderImpl {
+    inner: RefCell<arrow_array::builder::LargeStringBuilder>,
+}
+
+impl arrays::GuestLargeStringArrayBuilder for LargeStringArrayBuilderImpl {
+    fn new() -> Self {
+        Self { inner: RefCell::new(arrow_array::builder::LargeStringBuilder::new()) }
+    }
+
+    fn with_capacity(capacity: u64) -> arrays::LargeStringArrayBuilder {
+        arrays::LargeStringArrayBuilder::new(Self {
+            inner: RefCell::new(arrow_array::builder::LargeStringBuilder::with_capacity(capacity as usize, 0)),
+        })
+    }
+
+    fn append_value(&self, value: String) {
+        self.inner.borrow_mut().append_value(&value);
+    }
+
+    fn append_null(&self) {
+        self.inner.borrow_mut().append_null();
+    }
+
+    fn append_option(&self, value: Option<String>) {
+        self.inner.borrow_mut().append_option(value);
+    }
+
+    fn len(&self) -> u64 {
+        self.inner.borrow().len() as u64
+    }
+
+    fn finish(&self) -> arrays::Array {
+        arrays::Array::new(ArrayImpl {
+            inner: Arc::new(self.inner.borrow_mut().finish()),
+        })
+    }
+}
+
+struct LargeBinaryArrayBuilderImpl {
+    inner: RefCell<arrow_array::builder::LargeBinaryBuilder>,
+}
+
+impl arrays::GuestLargeBinaryArrayBuilder for LargeBinaryArrayBuilderImpl {
+    fn new() -> Self {
+        Self { inner: RefCell::new(arrow_array::builder::LargeBinaryBuilder::new()) }
+    }
+
+    fn with_capacity(capacity: u64) -> arrays::LargeBinaryArrayBuilder {
+        arrays::LargeBinaryArrayBuilder::new(Self {
+            inner: RefCell::new(arrow_array::builder::LargeBinaryBuilder::with_capacity(capacity as usize, 0)),
+        })
+    }
+
+    fn append_value(&self, value: Vec<u8>) {
+        self.inner.borrow_mut().append_value(&value);
+    }
+
+    fn append_null(&self) {
+        self.inner.borrow_mut().append_null();
+    }
+
+    fn len(&self) -> u64 {
+        self.inner.borrow().len() as u64
+    }
+
+    fn finish(&self) -> arrays::Array {
+        arrays::Array::new(ArrayImpl {
+            inner: Arc::new(self.inner.borrow_mut().finish()),
+        })
+    }
+}
+
+struct FixedSizeBinaryArrayBuilderImpl {
+    inner: RefCell<arrow_array::builder::FixedSizeBinaryBuilder>,
+    byte_width: u32,
+}
+
+impl arrays::GuestFixedSizeBinaryArrayBuilder for FixedSizeBinaryArrayBuilderImpl {
+    fn new(byte_width: u32) -> Self {
+        Self {
+            inner: RefCell::new(arrow_array::builder::FixedSizeBinaryBuilder::new(byte_width as i32)),
+            byte_width,
+        }
+    }
+
+    fn append_value(&self, value: Vec<u8>) -> Result<(), arrays::ArrowError> {
+        if value.len() != self.byte_width as usize {
+            return Err(arrays::ArrowError::InvalidArgument(
+                format!("Expected {} bytes, got {}", self.byte_width, value.len())
+            ));
+        }
+        self.inner.borrow_mut().append_value(&value)
+            .map_err(|e| arrays::ArrowError::ComputeError(e.to_string()))
+    }
+
+    fn append_null(&self) {
+        self.inner.borrow_mut().append_null();
+    }
+
+    fn len(&self) -> u64 {
+        self.inner.borrow().len() as u64
+    }
+
+    fn finish(&self) -> arrays::Array {
+        arrays::Array::new(ArrayImpl {
+            inner: Arc::new(self.inner.borrow_mut().finish()),
+        })
+    }
+}
+
+struct ListArrayBuilderImpl {
+    i64_builder: Option<RefCell<arrow_array::builder::ListBuilder<arrow_array::builder::Int64Builder>>>,
+    f64_builder: Option<RefCell<arrow_array::builder::ListBuilder<arrow_array::builder::Float64Builder>>>,
+    string_builder: Option<RefCell<arrow_array::builder::ListBuilder<arrow_array::builder::StringBuilder>>>,
+    value_type: types::DataType,
+}
+
+impl arrays::GuestListArrayBuilder for ListArrayBuilderImpl {
+    fn new(value_type: types::DataType) -> Self {
+        match &value_type {
+            types::DataType::Int64 => Self {
+                i64_builder: Some(RefCell::new(arrow_array::builder::ListBuilder::new(arrow_array::builder::Int64Builder::new()))),
+                f64_builder: None,
+                string_builder: None,
+                value_type,
+            },
+            types::DataType::Float64 => Self {
+                i64_builder: None,
+                f64_builder: Some(RefCell::new(arrow_array::builder::ListBuilder::new(arrow_array::builder::Float64Builder::new()))),
+                string_builder: None,
+                value_type,
+            },
+            types::DataType::Utf8 => Self {
+                i64_builder: None,
+                f64_builder: None,
+                string_builder: Some(RefCell::new(arrow_array::builder::ListBuilder::new(arrow_array::builder::StringBuilder::new()))),
+                value_type,
+            },
+            _ => Self {
+                // Default to i64 for unsupported types
+                i64_builder: Some(RefCell::new(arrow_array::builder::ListBuilder::new(arrow_array::builder::Int64Builder::new()))),
+                f64_builder: None,
+                string_builder: None,
+                value_type,
+            },
+        }
+    }
+
+    fn append_null(&self) {
+        if let Some(builder) = &self.i64_builder {
+            builder.borrow_mut().append_null();
+        } else if let Some(builder) = &self.f64_builder {
+            builder.borrow_mut().append_null();
+        } else if let Some(builder) = &self.string_builder {
+            builder.borrow_mut().append_null();
+        }
+    }
+
+    fn append_values_i64(&self, values: Vec<i64>) {
+        if let Some(builder) = &self.i64_builder {
+            let mut b = builder.borrow_mut();
+            let values_builder = b.values();
+            for v in values {
+                values_builder.append_value(v);
+            }
+            b.append(true);
+        }
+    }
+
+    fn append_values_f64(&self, values: Vec<f64>) {
+        if let Some(builder) = &self.f64_builder {
+            let mut b = builder.borrow_mut();
+            let values_builder = b.values();
+            for v in values {
+                values_builder.append_value(v);
+            }
+            b.append(true);
+        }
+    }
+
+    fn append_values_string(&self, values: Vec<String>) {
+        if let Some(builder) = &self.string_builder {
+            let mut b = builder.borrow_mut();
+            let values_builder = b.values();
+            for v in values {
+                values_builder.append_value(&v);
+            }
+            b.append(true);
+        }
+    }
+
+    fn len(&self) -> u64 {
+        if let Some(builder) = &self.i64_builder {
+            builder.borrow().len() as u64
+        } else if let Some(builder) = &self.f64_builder {
+            builder.borrow().len() as u64
+        } else if let Some(builder) = &self.string_builder {
+            builder.borrow().len() as u64
+        } else {
+            0
+        }
+    }
+
+    fn finish(&self) -> arrays::Array {
+        if let Some(builder) = &self.i64_builder {
+            arrays::Array::new(ArrayImpl {
+                inner: Arc::new(builder.borrow_mut().finish()),
+            })
+        } else if let Some(builder) = &self.f64_builder {
+            arrays::Array::new(ArrayImpl {
+                inner: Arc::new(builder.borrow_mut().finish()),
+            })
+        } else if let Some(builder) = &self.string_builder {
+            arrays::Array::new(ArrayImpl {
+                inner: Arc::new(builder.borrow_mut().finish()),
+            })
+        } else {
+            // Shouldn't happen, return empty list
+            arrays::Array::new(ArrayImpl {
+                inner: Arc::new(arrow_array::builder::ListBuilder::new(arrow_array::builder::Int64Builder::new()).finish()),
+            })
+        }
     }
 }
 
@@ -3474,6 +3891,390 @@ impl compute::Guest for Component {
         Err(compute::ArrowError::InvalidArgument("sign requires a numeric array".to_string()))
     }
 
+    // ========== Extended Mathematical Functions ==========
+
+    fn degrees(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        if let Some(float_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Float64Array>() {
+            let result: arrow_array::Float64Array = float_arr.iter().map(|v| v.map(|x| x.to_degrees())).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+        if let Some(float_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Float32Array>() {
+            let result: arrow_array::Float32Array = float_arr.iter().map(|v| v.map(|x| x.to_degrees())).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+        Err(compute::ArrowError::InvalidArgument("degrees requires a float array".to_string()))
+    }
+
+    fn radians(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        if let Some(float_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Float64Array>() {
+            let result: arrow_array::Float64Array = float_arr.iter().map(|v| v.map(|x| x.to_radians())).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+        if let Some(float_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Float32Array>() {
+            let result: arrow_array::Float32Array = float_arr.iter().map(|v| v.map(|x| x.to_radians())).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+        Err(compute::ArrowError::InvalidArgument("radians requires a float array".to_string()))
+    }
+
+    fn hypot(x: arrays::ArrayBorrow<'_>, y: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let x_impl = x.get::<ArrayImpl>();
+        let y_impl = y.get::<ArrayImpl>();
+
+        // Float64
+        if let (Some(x_arr), Some(y_arr)) = (
+            x_impl.inner.as_any().downcast_ref::<arrow_array::Float64Array>(),
+            y_impl.inner.as_any().downcast_ref::<arrow_array::Float64Array>(),
+        ) {
+            if x_arr.len() != y_arr.len() {
+                return Err(compute::ArrowError::InvalidArgument("Arrays must have the same length".to_string()));
+            }
+            let result: arrow_array::Float64Array = x_arr.iter().zip(y_arr.iter())
+                .map(|(xv, yv)| match (xv, yv) {
+                    (Some(x), Some(y)) => Some(x.hypot(y)),
+                    _ => None,
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        // Float32
+        if let (Some(x_arr), Some(y_arr)) = (
+            x_impl.inner.as_any().downcast_ref::<arrow_array::Float32Array>(),
+            y_impl.inner.as_any().downcast_ref::<arrow_array::Float32Array>(),
+        ) {
+            if x_arr.len() != y_arr.len() {
+                return Err(compute::ArrowError::InvalidArgument("Arrays must have the same length".to_string()));
+            }
+            let result: arrow_array::Float32Array = x_arr.iter().zip(y_arr.iter())
+                .map(|(xv, yv)| match (xv, yv) {
+                    (Some(x), Some(y)) => Some(x.hypot(y)),
+                    _ => None,
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("hypot requires float arrays of the same type".to_string()))
+    }
+
+    fn expm1(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        if let Some(float_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Float64Array>() {
+            let result: arrow_array::Float64Array = float_arr.iter().map(|v| v.map(|x| x.exp_m1())).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+        if let Some(float_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Float32Array>() {
+            let result: arrow_array::Float32Array = float_arr.iter().map(|v| v.map(|x| x.exp_m1())).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+        Err(compute::ArrowError::InvalidArgument("expm1 requires a float array".to_string()))
+    }
+
+    fn log1p(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        if let Some(float_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Float64Array>() {
+            let result: arrow_array::Float64Array = float_arr.iter().map(|v| v.map(|x| x.ln_1p())).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+        if let Some(float_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Float32Array>() {
+            let result: arrow_array::Float32Array = float_arr.iter().map(|v| v.map(|x| x.ln_1p())).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+        Err(compute::ArrowError::InvalidArgument("log1p requires a float array".to_string()))
+    }
+
+    fn copysign(magnitude: arrays::ArrayBorrow<'_>, sign: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let mag_impl = magnitude.get::<ArrayImpl>();
+        let sign_impl = sign.get::<ArrayImpl>();
+
+        // Float64
+        if let (Some(mag_arr), Some(sign_arr)) = (
+            mag_impl.inner.as_any().downcast_ref::<arrow_array::Float64Array>(),
+            sign_impl.inner.as_any().downcast_ref::<arrow_array::Float64Array>(),
+        ) {
+            if mag_arr.len() != sign_arr.len() {
+                return Err(compute::ArrowError::InvalidArgument("Arrays must have the same length".to_string()));
+            }
+            let result: arrow_array::Float64Array = mag_arr.iter().zip(sign_arr.iter())
+                .map(|(mv, sv)| match (mv, sv) {
+                    (Some(m), Some(s)) => Some(m.copysign(s)),
+                    _ => None,
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        // Float32
+        if let (Some(mag_arr), Some(sign_arr)) = (
+            mag_impl.inner.as_any().downcast_ref::<arrow_array::Float32Array>(),
+            sign_impl.inner.as_any().downcast_ref::<arrow_array::Float32Array>(),
+        ) {
+            if mag_arr.len() != sign_arr.len() {
+                return Err(compute::ArrowError::InvalidArgument("Arrays must have the same length".to_string()));
+            }
+            let result: arrow_array::Float32Array = mag_arr.iter().zip(sign_arr.iter())
+                .map(|(mv, sv)| match (mv, sv) {
+                    (Some(m), Some(s)) => Some(m.copysign(s)),
+                    _ => None,
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("copysign requires float arrays of the same type".to_string()))
+    }
+
+    fn fmax(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        macro_rules! fmax_impl {
+            ($arr_type:ty) => {
+                if let (Some(l_arr), Some(r_arr)) = (
+                    left_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                    right_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                ) {
+                    if l_arr.len() != r_arr.len() {
+                        return Err(compute::ArrowError::InvalidArgument("Arrays must have the same length".to_string()));
+                    }
+                    let result: $arr_type = l_arr.iter().zip(r_arr.iter())
+                        .map(|(lv, rv)| match (lv, rv) {
+                            (Some(l), Some(r)) => Some(l.max(r)),
+                            (Some(l), None) => Some(l),
+                            (None, Some(r)) => Some(r),
+                            (None, None) => None,
+                        })
+                        .collect();
+                    return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+                }
+            };
+        }
+
+        fmax_impl!(arrow_array::Float64Array);
+        fmax_impl!(arrow_array::Float32Array);
+        fmax_impl!(arrow_array::Int64Array);
+        fmax_impl!(arrow_array::Int32Array);
+        fmax_impl!(arrow_array::Int16Array);
+        fmax_impl!(arrow_array::Int8Array);
+        fmax_impl!(arrow_array::UInt64Array);
+        fmax_impl!(arrow_array::UInt32Array);
+        fmax_impl!(arrow_array::UInt16Array);
+        fmax_impl!(arrow_array::UInt8Array);
+
+        Err(compute::ArrowError::InvalidArgument("fmax requires numeric arrays of the same type".to_string()))
+    }
+
+    fn fmin(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        macro_rules! fmin_impl {
+            ($arr_type:ty) => {
+                if let (Some(l_arr), Some(r_arr)) = (
+                    left_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                    right_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                ) {
+                    if l_arr.len() != r_arr.len() {
+                        return Err(compute::ArrowError::InvalidArgument("Arrays must have the same length".to_string()));
+                    }
+                    let result: $arr_type = l_arr.iter().zip(r_arr.iter())
+                        .map(|(lv, rv)| match (lv, rv) {
+                            (Some(l), Some(r)) => Some(l.min(r)),
+                            (Some(l), None) => Some(l),
+                            (None, Some(r)) => Some(r),
+                            (None, None) => None,
+                        })
+                        .collect();
+                    return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+                }
+            };
+        }
+
+        fmin_impl!(arrow_array::Float64Array);
+        fmin_impl!(arrow_array::Float32Array);
+        fmin_impl!(arrow_array::Int64Array);
+        fmin_impl!(arrow_array::Int32Array);
+        fmin_impl!(arrow_array::Int16Array);
+        fmin_impl!(arrow_array::Int8Array);
+        fmin_impl!(arrow_array::UInt64Array);
+        fmin_impl!(arrow_array::UInt32Array);
+        fmin_impl!(arrow_array::UInt16Array);
+        fmin_impl!(arrow_array::UInt8Array);
+
+        Err(compute::ArrowError::InvalidArgument("fmin requires numeric arrays of the same type".to_string()))
+    }
+
+    fn gcd(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        fn compute_gcd<T: num_traits::Signed + Copy>(mut a: T, mut b: T) -> T {
+            while !b.is_zero() {
+                let t = b;
+                b = a % b;
+                a = t;
+            }
+            a.abs()
+        }
+
+        fn compute_gcd_unsigned<T: num_traits::Unsigned + Copy>(mut a: T, mut b: T) -> T {
+            while !b.is_zero() {
+                let t = b;
+                b = a % b;
+                a = t;
+            }
+            a
+        }
+
+        macro_rules! gcd_impl_signed {
+            ($arr_type:ty, $native_type:ty) => {
+                if let (Some(l_arr), Some(r_arr)) = (
+                    left_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                    right_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                ) {
+                    if l_arr.len() != r_arr.len() {
+                        return Err(compute::ArrowError::InvalidArgument("Arrays must have the same length".to_string()));
+                    }
+                    let result: $arr_type = l_arr.iter().zip(r_arr.iter())
+                        .map(|(lv, rv)| match (lv, rv) {
+                            (Some(l), Some(r)) => Some(compute_gcd::<$native_type>(l, r)),
+                            _ => None,
+                        })
+                        .collect();
+                    return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+                }
+            };
+        }
+
+        macro_rules! gcd_impl_unsigned {
+            ($arr_type:ty, $native_type:ty) => {
+                if let (Some(l_arr), Some(r_arr)) = (
+                    left_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                    right_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                ) {
+                    if l_arr.len() != r_arr.len() {
+                        return Err(compute::ArrowError::InvalidArgument("Arrays must have the same length".to_string()));
+                    }
+                    let result: $arr_type = l_arr.iter().zip(r_arr.iter())
+                        .map(|(lv, rv)| match (lv, rv) {
+                            (Some(l), Some(r)) => Some(compute_gcd_unsigned::<$native_type>(l, r)),
+                            _ => None,
+                        })
+                        .collect();
+                    return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+                }
+            };
+        }
+
+        gcd_impl_signed!(arrow_array::Int64Array, i64);
+        gcd_impl_signed!(arrow_array::Int32Array, i32);
+        gcd_impl_signed!(arrow_array::Int16Array, i16);
+        gcd_impl_signed!(arrow_array::Int8Array, i8);
+        gcd_impl_unsigned!(arrow_array::UInt64Array, u64);
+        gcd_impl_unsigned!(arrow_array::UInt32Array, u32);
+        gcd_impl_unsigned!(arrow_array::UInt16Array, u16);
+        gcd_impl_unsigned!(arrow_array::UInt8Array, u8);
+
+        Err(compute::ArrowError::InvalidArgument("gcd requires integer arrays of the same type".to_string()))
+    }
+
+    fn lcm(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        fn compute_gcd<T: num_traits::Signed + Copy>(mut a: T, mut b: T) -> T {
+            while !b.is_zero() {
+                let t = b;
+                b = a % b;
+                a = t;
+            }
+            a.abs()
+        }
+
+        fn compute_gcd_unsigned<T: num_traits::Unsigned + Copy>(mut a: T, mut b: T) -> T {
+            while !b.is_zero() {
+                let t = b;
+                b = a % b;
+                a = t;
+            }
+            a
+        }
+
+        fn compute_lcm<T: num_traits::Signed + Copy + std::ops::Mul<Output = T> + std::ops::Div<Output = T>>(a: T, b: T) -> T {
+            if a.is_zero() || b.is_zero() {
+                return T::zero();
+            }
+            (a / compute_gcd(a, b)) * b
+        }
+
+        fn compute_lcm_unsigned<T: num_traits::Unsigned + Copy + std::ops::Mul<Output = T> + std::ops::Div<Output = T>>(a: T, b: T) -> T {
+            if a.is_zero() || b.is_zero() {
+                return T::zero();
+            }
+            (a / compute_gcd_unsigned(a, b)) * b
+        }
+
+        macro_rules! lcm_impl_signed {
+            ($arr_type:ty, $native_type:ty) => {
+                if let (Some(l_arr), Some(r_arr)) = (
+                    left_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                    right_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                ) {
+                    if l_arr.len() != r_arr.len() {
+                        return Err(compute::ArrowError::InvalidArgument("Arrays must have the same length".to_string()));
+                    }
+                    let result: $arr_type = l_arr.iter().zip(r_arr.iter())
+                        .map(|(lv, rv)| match (lv, rv) {
+                            (Some(l), Some(r)) => Some(compute_lcm::<$native_type>(l.abs(), r.abs())),
+                            _ => None,
+                        })
+                        .collect();
+                    return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+                }
+            };
+        }
+
+        macro_rules! lcm_impl_unsigned {
+            ($arr_type:ty, $native_type:ty) => {
+                if let (Some(l_arr), Some(r_arr)) = (
+                    left_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                    right_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                ) {
+                    if l_arr.len() != r_arr.len() {
+                        return Err(compute::ArrowError::InvalidArgument("Arrays must have the same length".to_string()));
+                    }
+                    let result: $arr_type = l_arr.iter().zip(r_arr.iter())
+                        .map(|(lv, rv)| match (lv, rv) {
+                            (Some(l), Some(r)) => Some(compute_lcm_unsigned::<$native_type>(l, r)),
+                            _ => None,
+                        })
+                        .collect();
+                    return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+                }
+            };
+        }
+
+        lcm_impl_signed!(arrow_array::Int64Array, i64);
+        lcm_impl_signed!(arrow_array::Int32Array, i32);
+        lcm_impl_signed!(arrow_array::Int16Array, i16);
+        lcm_impl_signed!(arrow_array::Int8Array, i8);
+        lcm_impl_unsigned!(arrow_array::UInt64Array, u64);
+        lcm_impl_unsigned!(arrow_array::UInt32Array, u32);
+        lcm_impl_unsigned!(arrow_array::UInt16Array, u16);
+        lcm_impl_unsigned!(arrow_array::UInt8Array, u8);
+
+        Err(compute::ArrowError::InvalidArgument("lcm requires integer arrays of the same type".to_string()))
+    }
+
     // ========== Trigonometric Functions ==========
 
     fn sin(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
@@ -4095,6 +4896,28 @@ impl compute::Guest for Component {
         let arr_impl = arr.get::<ArrayImpl>();
         let arrow_type = convert::to_arrow_data_type(&to_type);
         let result = arrow_cast::cast(&arr_impl.inner, &arrow_type)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    fn can_cast_types(from_type: types::DataType, to_type: types::DataType) -> bool {
+        let from_arrow = convert::to_arrow_data_type(&from_type);
+        let to_arrow = convert::to_arrow_data_type(&to_type);
+        arrow_cast::can_cast_types(&from_arrow, &to_arrow)
+    }
+
+    fn try_cast(arr: arrays::ArrayBorrow<'_>, to_type: types::DataType) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_cast::CastOptions;
+        let arr_impl = arr.get::<ArrayImpl>();
+        let arrow_type = convert::to_arrow_data_type(&to_type);
+
+        // Use safe cast options that don't error on invalid values
+        let options = CastOptions {
+            safe: true, // Return null instead of error for invalid values
+            ..Default::default()
+        };
+
+        let result = arrow_cast::cast_with_options(&arr_impl.inner, &arrow_type, &options)
             .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
         Ok(arrays::Array::new(ArrayImpl { inner: result }))
     }
@@ -6372,6 +7195,229 @@ impl compute::Guest for Component {
         Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(list_builder.finish()) }))
     }
 
+    // ========== Advanced String Operations ==========
+
+    fn string_left(arr: arrays::ArrayBorrow<'_>, n: u64) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let string_arr = arr_impl.inner.as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let result: arrow_array::StringArray = string_arr.iter()
+            .map(|opt| opt.map(|s| {
+                let chars: Vec<char> = s.chars().collect();
+                chars.iter().take(n as usize).collect::<String>()
+            }))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn string_right(arr: arrays::ArrayBorrow<'_>, n: u64) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let string_arr = arr_impl.inner.as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let result: arrow_array::StringArray = string_arr.iter()
+            .map(|opt| opt.map(|s| {
+                let chars: Vec<char> = s.chars().collect();
+                let len = chars.len();
+                let start = if len > n as usize { len - n as usize } else { 0 };
+                chars[start..].iter().collect::<String>()
+            }))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn string_initcap(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let string_arr = arr_impl.inner.as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let result: arrow_array::StringArray = string_arr.iter()
+            .map(|opt| opt.map(|s| {
+                let mut result = String::with_capacity(s.len());
+                let mut capitalize_next = true;
+                for c in s.chars() {
+                    if c.is_whitespace() || !c.is_alphanumeric() {
+                        result.push(c);
+                        capitalize_next = true;
+                    } else if capitalize_next {
+                        result.extend(c.to_uppercase());
+                        capitalize_next = false;
+                    } else {
+                        result.extend(c.to_lowercase());
+                    }
+                }
+                result
+            }))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn string_position(arr: arrays::ArrayBorrow<'_>, substring: String) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let string_arr = arr_impl.inner.as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        // Return 1-indexed position (0 if not found, like SQL)
+        let result: arrow_array::UInt64Array = string_arr.iter()
+            .map(|opt| opt.map(|s| {
+                match s.find(&substring) {
+                    Some(idx) => {
+                        // Convert byte index to character index
+                        let char_idx = s[..idx].chars().count();
+                        (char_idx + 1) as u64 // 1-indexed
+                    }
+                    None => 0
+                }
+            }))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn string_position_from(arr: arrays::ArrayBorrow<'_>, substring: String, start: u64) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let string_arr = arr_impl.inner.as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        // Convert 1-indexed start to 0-indexed
+        let start_idx = if start > 0 { start as usize - 1 } else { 0 };
+
+        let result: arrow_array::UInt64Array = string_arr.iter()
+            .map(|opt| opt.map(|s| {
+                let chars: Vec<char> = s.chars().collect();
+                if start_idx >= chars.len() {
+                    return 0;
+                }
+                // Get substring from start position
+                let search_str: String = chars[start_idx..].iter().collect();
+                match search_str.find(&substring) {
+                    Some(idx) => {
+                        // Convert byte index to character index in the substring
+                        let char_idx = search_str[..idx].chars().count();
+                        (start_idx + char_idx + 1) as u64 // 1-indexed
+                    }
+                    None => 0
+                }
+            }))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn string_translate(arr: arrays::ArrayBorrow<'_>, from_chars: String, to_chars: String) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let string_arr = arr_impl.inner.as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        // Build translation map
+        let from: Vec<char> = from_chars.chars().collect();
+        let to: Vec<char> = to_chars.chars().collect();
+        let mut translation: HashMap<char, Option<char>> = HashMap::new();
+        for (i, &fc) in from.iter().enumerate() {
+            if i < to.len() {
+                translation.insert(fc, Some(to[i]));
+            } else {
+                // If to is shorter, characters are deleted
+                translation.insert(fc, None);
+            }
+        }
+
+        let result: arrow_array::StringArray = string_arr.iter()
+            .map(|opt| opt.map(|s| {
+                s.chars()
+                    .filter_map(|c| {
+                        match translation.get(&c) {
+                            Some(Some(replacement)) => Some(*replacement),
+                            Some(None) => None, // Delete character
+                            None => Some(c), // Keep original
+                        }
+                    })
+                    .collect::<String>()
+            }))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn string_concat_ws(separator: String, input_arrays: Vec<arrays::Array>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+
+        if input_arrays.is_empty() {
+            return Ok(arrays::Array::new(ArrayImpl {
+                inner: Arc::new(arrow_array::StringArray::from(Vec::<Option<&str>>::new()))
+            }));
+        }
+
+        // Get all string arrays
+        let string_arrays: Vec<&arrow_array::StringArray> = input_arrays.iter()
+            .map(|arr| {
+                let arr_impl = arr.get::<ArrayImpl>();
+                arr_impl.inner.as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| compute::ArrowError::InvalidArgument("All arrays must be string arrays".to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Check all arrays have the same length
+        let len = string_arrays[0].len();
+        for arr in &string_arrays {
+            if arr.len() != len {
+                return Err(compute::ArrowError::InvalidArgument("All arrays must have the same length".to_string()));
+            }
+        }
+
+        // Concatenate
+        let result: arrow_array::StringArray = (0..len)
+            .map(|i| {
+                let parts: Vec<&str> = string_arrays.iter()
+                    .filter_map(|arr| {
+                        if arr.is_null(i) {
+                            None
+                        } else {
+                            Some(arr.value(i))
+                        }
+                    })
+                    .collect();
+                if parts.is_empty() {
+                    None
+                } else {
+                    Some(parts.join(&separator))
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn string_split_part(arr: arrays::ArrayBorrow<'_>, delimiter: String, part: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let string_arr = arr_impl.inner.as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        // Part is 1-indexed (like SQL SPLIT_PART)
+        let part_idx = if part > 0 { part as usize - 1 } else { 0 };
+
+        let result: arrow_array::StringArray = string_arr.iter()
+            .map(|opt| opt.and_then(|s| {
+                let parts: Vec<&str> = s.split(&delimiter).collect();
+                parts.get(part_idx).map(|&p| p.to_string())
+            }))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
     // ========== Array Generation ==========
 
     fn make_array_i64(start: i64, end: i64, step: i64) -> Result<arrays::Array, compute::ArrowError> {
@@ -7270,6 +8316,79 @@ impl compute::Guest for Component {
         build_join_result(&left_impl.inner, &right_impl.inner, &left_indices, &right_indices, &compute::JoinType::Inner)
     }
 
+    // ========== Arrow-Row Operations ==========
+
+    fn row_distinct(
+        batch: record_batch::RecordBatchBorrow<'_>,
+        columns: Vec<String>,
+    ) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        use arrow_row::{RowConverter, SortField};
+        use std::collections::HashSet;
+
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let inner = &batch_impl.inner;
+
+        if columns.is_empty() {
+            return Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: inner.clone() }));
+        }
+
+        // Get the columns to use for distinct checking
+        let sort_fields: Vec<SortField> = columns.iter()
+            .filter_map(|name| {
+                inner.schema().field_with_name(name).ok()
+                    .map(|field| SortField::new(field.data_type().clone()))
+            })
+            .collect();
+
+        if sort_fields.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("No valid columns found".to_string()));
+        }
+
+        // Get column arrays
+        let arrays_for_rows: Vec<ArrayRef> = columns.iter()
+            .filter_map(|name| inner.column_by_name(name).cloned())
+            .collect();
+
+        // Convert to row format
+        let converter = RowConverter::new(sort_fields)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        let rows = converter.convert_columns(&arrays_for_rows)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        // Find distinct rows
+        let mut seen: HashSet<Vec<u8>> = HashSet::new();
+        let mut indices: Vec<u64> = Vec::new();
+
+        for (i, row) in rows.iter().enumerate() {
+            let row_bytes = row.as_ref().to_vec();
+            if seen.insert(row_bytes) {
+                indices.push(i as u64);
+            }
+        }
+
+        // Take the distinct rows
+        let indices_arr: arrow_array::UInt64Array = indices.into_iter().map(Some).collect();
+        let columns_result: Result<Vec<ArrayRef>, _> = inner.columns().iter()
+            .map(|col| arrow_select::take::take(col.as_ref(), &indices_arr, None))
+            .collect();
+        let columns_result = columns_result
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        let result = ArrowRecordBatch::try_new(inner.schema().clone(), columns_result)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn row_deduplicate(
+        batch: record_batch::RecordBatchBorrow<'_>,
+        columns: Vec<String>,
+    ) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        // row_deduplicate is the same as row_distinct - it removes duplicates
+        // preserving first occurrence
+        Self::row_distinct(batch, columns)
+    }
+
     // ========== Additional Statistics ==========
 
     fn mode(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
@@ -7497,6 +8616,323 @@ impl compute::Guest for Component {
         Ok(Some(cov / (x_var.sqrt() * y_var.sqrt())))
     }
 
+    // ========== Extended Statistical Functions ==========
+
+    fn index_of_max(arr: arrays::ArrayBorrow<'_>) -> Result<Option<u64>, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        macro_rules! index_of_max_impl {
+            ($arr_type:ty) => {
+                if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
+                    if typed_arr.len() == 0 {
+                        return Ok(None);
+                    }
+                    let mut max_idx = None;
+                    let mut max_val = None;
+                    for (i, opt) in typed_arr.iter().enumerate() {
+                        if let Some(v) = opt {
+                            match max_val {
+                                None => {
+                                    max_val = Some(v);
+                                    max_idx = Some(i as u64);
+                                }
+                                Some(mv) => {
+                                    if v > mv {
+                                        max_val = Some(v);
+                                        max_idx = Some(i as u64);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Ok(max_idx);
+                }
+            };
+        }
+
+        index_of_max_impl!(arrow_array::Float64Array);
+        index_of_max_impl!(arrow_array::Float32Array);
+        index_of_max_impl!(arrow_array::Int64Array);
+        index_of_max_impl!(arrow_array::Int32Array);
+        index_of_max_impl!(arrow_array::Int16Array);
+        index_of_max_impl!(arrow_array::Int8Array);
+        index_of_max_impl!(arrow_array::UInt64Array);
+        index_of_max_impl!(arrow_array::UInt32Array);
+        index_of_max_impl!(arrow_array::UInt16Array);
+        index_of_max_impl!(arrow_array::UInt8Array);
+
+        Err(compute::ArrowError::InvalidArgument("index_of_max requires a numeric array".to_string()))
+    }
+
+    fn index_of_min(arr: arrays::ArrayBorrow<'_>) -> Result<Option<u64>, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        macro_rules! index_of_min_impl {
+            ($arr_type:ty) => {
+                if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
+                    if typed_arr.len() == 0 {
+                        return Ok(None);
+                    }
+                    let mut min_idx = None;
+                    let mut min_val = None;
+                    for (i, opt) in typed_arr.iter().enumerate() {
+                        if let Some(v) = opt {
+                            match min_val {
+                                None => {
+                                    min_val = Some(v);
+                                    min_idx = Some(i as u64);
+                                }
+                                Some(mv) => {
+                                    if v < mv {
+                                        min_val = Some(v);
+                                        min_idx = Some(i as u64);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Ok(min_idx);
+                }
+            };
+        }
+
+        index_of_min_impl!(arrow_array::Float64Array);
+        index_of_min_impl!(arrow_array::Float32Array);
+        index_of_min_impl!(arrow_array::Int64Array);
+        index_of_min_impl!(arrow_array::Int32Array);
+        index_of_min_impl!(arrow_array::Int16Array);
+        index_of_min_impl!(arrow_array::Int8Array);
+        index_of_min_impl!(arrow_array::UInt64Array);
+        index_of_min_impl!(arrow_array::UInt32Array);
+        index_of_min_impl!(arrow_array::UInt16Array);
+        index_of_min_impl!(arrow_array::UInt8Array);
+
+        Err(compute::ArrowError::InvalidArgument("index_of_min requires a numeric array".to_string()))
+    }
+
+    fn is_monotonic_increasing(arr: arrays::ArrayBorrow<'_>) -> Result<bool, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        macro_rules! monotonic_increasing_impl {
+            ($arr_type:ty) => {
+                if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
+                    if typed_arr.len() < 2 {
+                        return Ok(true);
+                    }
+                    let mut prev = None;
+                    for opt in typed_arr.iter() {
+                        if let Some(v) = opt {
+                            if let Some(p) = prev {
+                                if v < p {
+                                    return Ok(false);
+                                }
+                            }
+                            prev = Some(v);
+                        }
+                    }
+                    return Ok(true);
+                }
+            };
+        }
+
+        monotonic_increasing_impl!(arrow_array::Float64Array);
+        monotonic_increasing_impl!(arrow_array::Float32Array);
+        monotonic_increasing_impl!(arrow_array::Int64Array);
+        monotonic_increasing_impl!(arrow_array::Int32Array);
+        monotonic_increasing_impl!(arrow_array::Int16Array);
+        monotonic_increasing_impl!(arrow_array::Int8Array);
+        monotonic_increasing_impl!(arrow_array::UInt64Array);
+        monotonic_increasing_impl!(arrow_array::UInt32Array);
+        monotonic_increasing_impl!(arrow_array::UInt16Array);
+        monotonic_increasing_impl!(arrow_array::UInt8Array);
+
+        Err(compute::ArrowError::InvalidArgument("is_monotonic_increasing requires a numeric array".to_string()))
+    }
+
+    fn is_monotonic_decreasing(arr: arrays::ArrayBorrow<'_>) -> Result<bool, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        macro_rules! monotonic_decreasing_impl {
+            ($arr_type:ty) => {
+                if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
+                    if typed_arr.len() < 2 {
+                        return Ok(true);
+                    }
+                    let mut prev = None;
+                    for opt in typed_arr.iter() {
+                        if let Some(v) = opt {
+                            if let Some(p) = prev {
+                                if v > p {
+                                    return Ok(false);
+                                }
+                            }
+                            prev = Some(v);
+                        }
+                    }
+                    return Ok(true);
+                }
+            };
+        }
+
+        monotonic_decreasing_impl!(arrow_array::Float64Array);
+        monotonic_decreasing_impl!(arrow_array::Float32Array);
+        monotonic_decreasing_impl!(arrow_array::Int64Array);
+        monotonic_decreasing_impl!(arrow_array::Int32Array);
+        monotonic_decreasing_impl!(arrow_array::Int16Array);
+        monotonic_decreasing_impl!(arrow_array::Int8Array);
+        monotonic_decreasing_impl!(arrow_array::UInt64Array);
+        monotonic_decreasing_impl!(arrow_array::UInt32Array);
+        monotonic_decreasing_impl!(arrow_array::UInt16Array);
+        monotonic_decreasing_impl!(arrow_array::UInt8Array);
+
+        Err(compute::ArrowError::InvalidArgument("is_monotonic_decreasing requires a numeric array".to_string()))
+    }
+
+    fn top_n(arr: arrays::ArrayBorrow<'_>, n: u64) -> Result<arrays::Array, compute::ArrowError> {
+        // Use existing sort_limit with descending order
+        let options = compute::SortOptions {
+            descending: true,
+            nulls_first: false,
+        };
+        Self::sort_limit(arr, options, n)
+    }
+
+    fn bottom_n(arr: arrays::ArrayBorrow<'_>, n: u64) -> Result<arrays::Array, compute::ArrowError> {
+        // Use existing sort_limit with ascending order
+        let options = compute::SortOptions {
+            descending: false,
+            nulls_first: false,
+        };
+        Self::sort_limit(arr, options, n)
+    }
+
+    fn top_n_indices(arr: arrays::ArrayBorrow<'_>, n: u64) -> Result<arrays::Array, compute::ArrowError> {
+        // Use existing sort_indices_limit with descending order
+        let options = compute::SortOptions {
+            descending: true,
+            nulls_first: false,
+        };
+        Self::sort_indices_limit(arr, options, n)
+    }
+
+    fn bottom_n_indices(arr: arrays::ArrayBorrow<'_>, n: u64) -> Result<arrays::Array, compute::ArrowError> {
+        // Use existing sort_indices_limit with ascending order
+        let options = compute::SortOptions {
+            descending: false,
+            nulls_first: false,
+        };
+        Self::sort_indices_limit(arr, options, n)
+    }
+
+    fn entropy(arr: arrays::ArrayBorrow<'_>) -> Result<Option<f64>, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if arr_impl.inner.len() == 0 {
+            return Ok(None);
+        }
+
+        // Extract values and count occurrences manually
+        let values = extract_float64_values(&arr)?;
+        if values.is_empty() {
+            return Ok(None);
+        }
+
+        // Count occurrences using a HashMap
+        let mut counts: HashMap<u64, u64> = HashMap::new();
+        for v in &values {
+            // Convert float to bits for hashing (handles exact equality)
+            let key = v.to_bits();
+            *counts.entry(key).or_insert(0) += 1;
+        }
+
+        let total = values.len() as f64;
+
+        // Calculate Shannon entropy: -sum(p * log2(p))
+        let entropy: f64 = counts.values()
+            .filter_map(|&count| {
+                let p = count as f64 / total;
+                if p > 0.0 {
+                    Some(-p * p.log2())
+                } else {
+                    None
+                }
+            })
+            .sum();
+
+        Ok(Some(entropy))
+    }
+
+    fn histogram(arr: arrays::ArrayBorrow<'_>, bins: u32) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        if bins == 0 {
+            return Err(compute::ArrowError::InvalidArgument("bins must be greater than 0".to_string()));
+        }
+
+        // Extract float values
+        let values = extract_float64_values(&arr)?;
+        if values.is_empty() {
+            // Return empty histogram
+            let schema = Arc::new(arrow_schema::Schema::new(vec![
+                arrow_schema::Field::new("bin_min", arrow_schema::DataType::Float64, false),
+                arrow_schema::Field::new("bin_max", arrow_schema::DataType::Float64, false),
+                arrow_schema::Field::new("count", arrow_schema::DataType::UInt64, false),
+            ]));
+            let batch = ArrowRecordBatch::try_new(schema, vec![
+                Arc::new(arrow_array::Float64Array::from(Vec::<f64>::new())),
+                Arc::new(arrow_array::Float64Array::from(Vec::<f64>::new())),
+                Arc::new(arrow_array::UInt64Array::from(Vec::<u64>::new())),
+            ]).map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+            return Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: batch }));
+        }
+
+        // Find min/max
+        let min_val = values.iter().cloned().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+        let max_val = values.iter().cloned().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+
+        // Handle case where all values are the same
+        let (bin_width, actual_min) = if min_val == max_val {
+            (1.0, min_val - 0.5)
+        } else {
+            ((max_val - min_val) / bins as f64, min_val)
+        };
+
+        // Initialize bin counts
+        let mut counts = vec![0u64; bins as usize];
+
+        // Bin the values
+        for &v in &values {
+            let bin_idx = if v == max_val && min_val != max_val {
+                bins as usize - 1 // Include max value in last bin
+            } else {
+                let idx = ((v - actual_min) / bin_width) as usize;
+                idx.min(bins as usize - 1)
+            };
+            counts[bin_idx] += 1;
+        }
+
+        // Create arrays
+        let bin_mins: Vec<f64> = (0..bins).map(|i| actual_min + (i as f64) * bin_width).collect();
+        let bin_maxs: Vec<f64> = (0..bins).map(|i| actual_min + ((i + 1) as f64) * bin_width).collect();
+
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("bin_min", arrow_schema::DataType::Float64, false),
+            arrow_schema::Field::new("bin_max", arrow_schema::DataType::Float64, false),
+            arrow_schema::Field::new("count", arrow_schema::DataType::UInt64, false),
+        ]));
+
+        let batch = ArrowRecordBatch::try_new(schema, vec![
+            Arc::new(arrow_array::Float64Array::from(bin_mins)),
+            Arc::new(arrow_array::Float64Array::from(bin_maxs)),
+            Arc::new(arrow_array::UInt64Array::from(counts)),
+        ]).map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: batch }))
+    }
+
     fn rolling_sum(arr: arrays::ArrayBorrow<'_>, options: compute::RollingOptions) -> Result<arrays::Array, compute::ArrowError> {
         rolling_agg(&arr, &options, |window| window.iter().sum())
     }
@@ -7526,6 +8962,203 @@ impl compute::Guest for Component {
             let variance = window.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (window.len() - 1) as f64;
             variance.sqrt()
         })
+    }
+
+    // ========== Cumulative/Scan Operations ==========
+
+    fn cumulative_sum(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        // Handle different numeric types with appropriate precision
+        macro_rules! cumulative_sum_impl {
+            ($arr_type:ty, $result_type:ty, $acc_type:ty) => {
+                if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
+                    let mut acc: $acc_type = Default::default();
+                    let result: $result_type = typed_arr.iter()
+                        .map(|opt| {
+                            match opt {
+                                Some(v) => {
+                                    acc += v as $acc_type;
+                                    Some(acc)
+                                }
+                                None => Some(acc), // Nulls don't change the running sum
+                            }
+                        })
+                        .collect();
+                    return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+                }
+            };
+        }
+
+        // Integer types -> Int64 for precision
+        cumulative_sum_impl!(arrow_array::Int8Array, arrow_array::Int64Array, i64);
+        cumulative_sum_impl!(arrow_array::Int16Array, arrow_array::Int64Array, i64);
+        cumulative_sum_impl!(arrow_array::Int32Array, arrow_array::Int64Array, i64);
+        cumulative_sum_impl!(arrow_array::Int64Array, arrow_array::Int64Array, i64);
+
+        // Unsigned types -> UInt64 for precision
+        cumulative_sum_impl!(arrow_array::UInt8Array, arrow_array::UInt64Array, u64);
+        cumulative_sum_impl!(arrow_array::UInt16Array, arrow_array::UInt64Array, u64);
+        cumulative_sum_impl!(arrow_array::UInt32Array, arrow_array::UInt64Array, u64);
+        cumulative_sum_impl!(arrow_array::UInt64Array, arrow_array::UInt64Array, u64);
+
+        // Float types -> Float64
+        cumulative_sum_impl!(arrow_array::Float32Array, arrow_array::Float64Array, f64);
+        cumulative_sum_impl!(arrow_array::Float64Array, arrow_array::Float64Array, f64);
+
+        Err(compute::ArrowError::InvalidArgument(
+            "cumulative_sum requires numeric array (Int8-64, UInt8-64, Float32/64)".to_string()
+        ))
+    }
+
+    fn cumulative_prod(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        macro_rules! cumulative_prod_impl {
+            ($arr_type:ty, $result_type:ty, $acc_type:ty, $identity:expr) => {
+                if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
+                    let mut acc: $acc_type = $identity;
+                    let result: $result_type = typed_arr.iter()
+                        .map(|opt| {
+                            match opt {
+                                Some(v) => {
+                                    acc *= v as $acc_type;
+                                    Some(acc)
+                                }
+                                None => Some(acc), // Nulls don't change the running product
+                            }
+                        })
+                        .collect();
+                    return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+                }
+            };
+        }
+
+        // Integer types -> Int64 for precision
+        cumulative_prod_impl!(arrow_array::Int8Array, arrow_array::Int64Array, i64, 1i64);
+        cumulative_prod_impl!(arrow_array::Int16Array, arrow_array::Int64Array, i64, 1i64);
+        cumulative_prod_impl!(arrow_array::Int32Array, arrow_array::Int64Array, i64, 1i64);
+        cumulative_prod_impl!(arrow_array::Int64Array, arrow_array::Int64Array, i64, 1i64);
+
+        // Unsigned types -> UInt64 for precision
+        cumulative_prod_impl!(arrow_array::UInt8Array, arrow_array::UInt64Array, u64, 1u64);
+        cumulative_prod_impl!(arrow_array::UInt16Array, arrow_array::UInt64Array, u64, 1u64);
+        cumulative_prod_impl!(arrow_array::UInt32Array, arrow_array::UInt64Array, u64, 1u64);
+        cumulative_prod_impl!(arrow_array::UInt64Array, arrow_array::UInt64Array, u64, 1u64);
+
+        // Float types -> Float64
+        cumulative_prod_impl!(arrow_array::Float32Array, arrow_array::Float64Array, f64, 1.0f64);
+        cumulative_prod_impl!(arrow_array::Float64Array, arrow_array::Float64Array, f64, 1.0f64);
+
+        Err(compute::ArrowError::InvalidArgument(
+            "cumulative_prod requires numeric array (Int8-64, UInt8-64, Float32/64)".to_string()
+        ))
+    }
+
+    fn cumulative_min(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        macro_rules! cumulative_min_impl {
+            ($arr_type:ty, $result_type:ty, $native_type:ty) => {
+                if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
+                    let mut min_val: Option<$native_type> = None;
+                    let result: $result_type = typed_arr.iter()
+                        .map(|opt| {
+                            match opt {
+                                Some(v) => {
+                                    min_val = Some(match min_val {
+                                        Some(m) => if v < m { v } else { m },
+                                        None => v,
+                                    });
+                                    min_val
+                                }
+                                None => min_val, // Return current min on null
+                            }
+                        })
+                        .collect();
+                    return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+                }
+            };
+        }
+
+        cumulative_min_impl!(arrow_array::Int8Array, arrow_array::Int8Array, i8);
+        cumulative_min_impl!(arrow_array::Int16Array, arrow_array::Int16Array, i16);
+        cumulative_min_impl!(arrow_array::Int32Array, arrow_array::Int32Array, i32);
+        cumulative_min_impl!(arrow_array::Int64Array, arrow_array::Int64Array, i64);
+        cumulative_min_impl!(arrow_array::UInt8Array, arrow_array::UInt8Array, u8);
+        cumulative_min_impl!(arrow_array::UInt16Array, arrow_array::UInt16Array, u16);
+        cumulative_min_impl!(arrow_array::UInt32Array, arrow_array::UInt32Array, u32);
+        cumulative_min_impl!(arrow_array::UInt64Array, arrow_array::UInt64Array, u64);
+        cumulative_min_impl!(arrow_array::Float32Array, arrow_array::Float32Array, f32);
+        cumulative_min_impl!(arrow_array::Float64Array, arrow_array::Float64Array, f64);
+
+        Err(compute::ArrowError::InvalidArgument(
+            "cumulative_min requires numeric array (Int8-64, UInt8-64, Float32/64)".to_string()
+        ))
+    }
+
+    fn cumulative_max(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        macro_rules! cumulative_max_impl {
+            ($arr_type:ty, $result_type:ty, $native_type:ty) => {
+                if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
+                    let mut max_val: Option<$native_type> = None;
+                    let result: $result_type = typed_arr.iter()
+                        .map(|opt| {
+                            match opt {
+                                Some(v) => {
+                                    max_val = Some(match max_val {
+                                        Some(m) => if v > m { v } else { m },
+                                        None => v,
+                                    });
+                                    max_val
+                                }
+                                None => max_val, // Return current max on null
+                            }
+                        })
+                        .collect();
+                    return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+                }
+            };
+        }
+
+        cumulative_max_impl!(arrow_array::Int8Array, arrow_array::Int8Array, i8);
+        cumulative_max_impl!(arrow_array::Int16Array, arrow_array::Int16Array, i16);
+        cumulative_max_impl!(arrow_array::Int32Array, arrow_array::Int32Array, i32);
+        cumulative_max_impl!(arrow_array::Int64Array, arrow_array::Int64Array, i64);
+        cumulative_max_impl!(arrow_array::UInt8Array, arrow_array::UInt8Array, u8);
+        cumulative_max_impl!(arrow_array::UInt16Array, arrow_array::UInt16Array, u16);
+        cumulative_max_impl!(arrow_array::UInt32Array, arrow_array::UInt32Array, u32);
+        cumulative_max_impl!(arrow_array::UInt64Array, arrow_array::UInt64Array, u64);
+        cumulative_max_impl!(arrow_array::Float32Array, arrow_array::Float32Array, f32);
+        cumulative_max_impl!(arrow_array::Float64Array, arrow_array::Float64Array, f64);
+
+        Err(compute::ArrowError::InvalidArgument(
+            "cumulative_max requires numeric array (Int8-64, UInt8-64, Float32/64)".to_string()
+        ))
+    }
+
+    fn cumulative_count(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+        let len = arr_impl.inner.len();
+
+        let mut count: u64 = 0;
+        let result: arrow_array::UInt64Array = (0..len)
+            .map(|i| {
+                if arr_impl.inner.is_valid(i) {
+                    count += 1;
+                }
+                Some(count)
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
     }
 
     // ========== String Distance Functions ==========
