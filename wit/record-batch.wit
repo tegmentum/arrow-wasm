@@ -83,4 +83,12 @@ interface record-batch {
     /// Validate a record batch against a specific schema
     /// Returns a list of validation errors (empty list means valid)
     validate-batch-schema: func(batch: borrow<record-batch>, expected-schema: borrow<schema>) -> list<validation-error>;
+
+    /// ========== Schema & Metadata Operations ==========
+
+    /// Create a new record batch with a different schema (must be compatible)
+    record-batch-with-schema: func(batch: borrow<record-batch>, new-schema: schema) -> result<record-batch, arrow-error>;
+
+    /// Rename columns in a record batch
+    record-batch-rename-columns: func(batch: borrow<record-batch>, new-names: list<string>) -> result<record-batch, arrow-error>;
 }

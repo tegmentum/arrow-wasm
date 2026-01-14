@@ -438,6 +438,75 @@ fn arrays_equal_at_index(arr: &Arc<dyn arrow_array::Array>, idx1: usize, idx2: u
     false
 }
 
+/// Compute frame bounds for a given row position within a partition
+/// Returns (frame_start, frame_end) as indices within the partition (relative to partition start)
+/// The frame is [frame_start, frame_end) - exclusive end
+fn compute_frame_bounds(
+    frame: &Option<compute::WindowFrame>,
+    current_pos: usize,       // Position within partition (0-indexed)
+    partition_start: usize,   // Start of partition in sorted order
+    partition_end: usize,     // End of partition in sorted order (exclusive)
+) -> (usize, usize) {
+    let partition_len = partition_end - partition_start;
+
+    match frame {
+        None => {
+            // Default: ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            (partition_start, partition_start + current_pos + 1)
+        }
+        Some(f) => {
+            // Compute start bound
+            let frame_start = if f.unbounded_start {
+                partition_start
+            } else {
+                let offset = f.start_offset;
+                if offset <= 0 {
+                    // PRECEDING: go back by |offset| rows
+                    let preceding = (-offset) as usize;
+                    if preceding > current_pos {
+                        partition_start
+                    } else {
+                        partition_start + current_pos - preceding
+                    }
+                } else {
+                    // FOLLOWING: go forward by offset rows
+                    let following = offset as usize;
+                    let pos = partition_start + current_pos + following;
+                    pos.min(partition_end)
+                }
+            };
+
+            // Compute end bound (exclusive)
+            let frame_end = if f.unbounded_end {
+                partition_end
+            } else {
+                let offset = f.end_offset;
+                if offset < 0 {
+                    // PRECEDING: end before current row
+                    let preceding = (-offset) as usize;
+                    if preceding > current_pos {
+                        partition_start // Empty frame
+                    } else {
+                        partition_start + current_pos - preceding + 1
+                    }
+                } else {
+                    // CURRENT ROW or FOLLOWING
+                    let following = offset as usize;
+                    let pos = partition_start + current_pos + following + 1;
+                    pos.min(partition_end)
+                }
+            };
+
+            // Ensure frame_start <= frame_end
+            if frame_start >= frame_end {
+                (partition_start, partition_start) // Empty frame
+            } else {
+                (frame_start, frame_end)
+            }
+        }
+    }
+}
+
 /// Check if two rows are equal across all ordering columns
 fn rows_equal_for_ordering(order_arrays: &[Arc<dyn arrow_array::Array>], idx1: usize, idx2: usize) -> bool {
     if order_arrays.is_empty() {
@@ -531,6 +600,36 @@ impl types::Guest for Component {
     type Field = FieldImpl;
     type Schema = SchemaImpl;
     type SchemaBuilder = SchemaBuilderImpl;
+
+    fn schema_merge(schemas: Vec<types::Schema>) -> Result<types::Schema, types::ArrowError> {
+        if schemas.is_empty() {
+            return Err(types::ArrowError::InvalidArgument("No schemas to merge".to_string()));
+        }
+
+        let mut merged_fields: Vec<Arc<arrow_schema::Field>> = Vec::new();
+        let mut merged_metadata: HashMap<String, String> = HashMap::new();
+
+        for schema_res in schemas {
+            let schema_impl = schema_res.get::<SchemaImpl>();
+            for field in schema_impl.inner.fields() {
+                // Check if field with same name already exists
+                if !merged_fields.iter().any(|f| f.name() == field.name()) {
+                    merged_fields.push(field.clone());
+                }
+            }
+            // Merge metadata (later schemas override earlier ones)
+            for (k, v) in schema_impl.inner.metadata() {
+                merged_metadata.insert(k.clone(), v.clone());
+            }
+        }
+
+        let merged_schema = Arc::new(arrow_schema::Schema::new_with_metadata(
+            arrow_schema::Fields::from(merged_fields),
+            merged_metadata,
+        ));
+
+        Ok(types::Schema::new(SchemaImpl { inner: merged_schema }))
+    }
 }
 
 struct FieldImpl {
@@ -647,6 +746,10 @@ impl types::GuestSchema for SchemaImpl {
 
     fn index_of(&self, name: String) -> Option<u32> {
         self.inner.index_of(&name).ok().map(|i| i as u32)
+    }
+
+    fn contains_field(&self, name: String) -> bool {
+        self.inner.index_of(&name).is_ok()
     }
 }
 
@@ -1497,9 +1600,17 @@ impl arrays::Guest for Component {
             match value_type {
                 arrow_schema::DataType::Int64 => list_element_impl!(list_arr, arrow_array::Int64Array, arrow_array::builder::Int64Builder),
                 arrow_schema::DataType::Int32 => list_element_impl!(list_arr, arrow_array::Int32Array, arrow_array::builder::Int32Builder),
+                arrow_schema::DataType::Int16 => list_element_impl!(list_arr, arrow_array::Int16Array, arrow_array::builder::Int16Builder),
+                arrow_schema::DataType::Int8 => list_element_impl!(list_arr, arrow_array::Int8Array, arrow_array::builder::Int8Builder),
+                arrow_schema::DataType::UInt64 => list_element_impl!(list_arr, arrow_array::UInt64Array, arrow_array::builder::UInt64Builder),
+                arrow_schema::DataType::UInt32 => list_element_impl!(list_arr, arrow_array::UInt32Array, arrow_array::builder::UInt32Builder),
+                arrow_schema::DataType::UInt16 => list_element_impl!(list_arr, arrow_array::UInt16Array, arrow_array::builder::UInt16Builder),
+                arrow_schema::DataType::UInt8 => list_element_impl!(list_arr, arrow_array::UInt8Array, arrow_array::builder::UInt8Builder),
                 arrow_schema::DataType::Float64 => list_element_impl!(list_arr, arrow_array::Float64Array, arrow_array::builder::Float64Builder),
                 arrow_schema::DataType::Float32 => list_element_impl!(list_arr, arrow_array::Float32Array, arrow_array::builder::Float32Builder),
                 arrow_schema::DataType::Boolean => list_element_impl!(list_arr, arrow_array::BooleanArray, arrow_array::builder::BooleanBuilder),
+                arrow_schema::DataType::Date32 => list_element_impl!(list_arr, arrow_array::Date32Array, arrow_array::builder::Date32Builder),
+                arrow_schema::DataType::Date64 => list_element_impl!(list_arr, arrow_array::Date64Array, arrow_array::builder::Date64Builder),
                 arrow_schema::DataType::Utf8 => {
                     let mut builder = arrow_array::builder::StringBuilder::with_capacity(list_arr.len(), 256);
                     for i in 0..list_arr.len() {
@@ -1642,6 +1753,84 @@ impl arrays::Guest for Component {
                 let values_arr = arrow_array::Float64Array::from(values);
                 let list_arr = arrow_array::ListArray::try_new(
                     Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float64, true)),
+                    arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(offsets)),
+                    Arc::new(values_arr),
+                    None,
+                ).map_err(|e| arrays::ArrowError::ComputeError(e.to_string()))?;
+
+                Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(list_arr) }))
+            }
+            arrow_schema::DataType::Int32 => {
+                let mut offsets = vec![0i32];
+                let mut values: Vec<i32> = Vec::new();
+
+                for arr in &input_arrays {
+                    let arr_impl = arr.get::<ArrayImpl>();
+                    if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+                        for i in 0..int_arr.len() {
+                            values.push(if int_arr.is_null(i) { 0 } else { int_arr.value(i) });
+                        }
+                        offsets.push(values.len() as i32);
+                    } else {
+                        return Err(arrays::ArrowError::InvalidArgument("All arrays must have the same type".to_string()));
+                    }
+                }
+
+                let values_arr = arrow_array::Int32Array::from(values);
+                let list_arr = arrow_array::ListArray::try_new(
+                    Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Int32, true)),
+                    arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(offsets)),
+                    Arc::new(values_arr),
+                    None,
+                ).map_err(|e| arrays::ArrowError::ComputeError(e.to_string()))?;
+
+                Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(list_arr) }))
+            }
+            arrow_schema::DataType::Float32 => {
+                let mut offsets = vec![0i32];
+                let mut values: Vec<f32> = Vec::new();
+
+                for arr in &input_arrays {
+                    let arr_impl = arr.get::<ArrayImpl>();
+                    if let Some(float_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Float32Array>() {
+                        for i in 0..float_arr.len() {
+                            values.push(if float_arr.is_null(i) { f32::NAN } else { float_arr.value(i) });
+                        }
+                        offsets.push(values.len() as i32);
+                    } else {
+                        return Err(arrays::ArrowError::InvalidArgument("All arrays must have the same type".to_string()));
+                    }
+                }
+
+                let values_arr = arrow_array::Float32Array::from(values);
+                let list_arr = arrow_array::ListArray::try_new(
+                    Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float32, true)),
+                    arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(offsets)),
+                    Arc::new(values_arr),
+                    None,
+                ).map_err(|e| arrays::ArrowError::ComputeError(e.to_string()))?;
+
+                Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(list_arr) }))
+            }
+            arrow_schema::DataType::Boolean => {
+                let mut offsets = vec![0i32];
+                let mut values: Vec<bool> = Vec::new();
+
+                for arr in &input_arrays {
+                    let arr_impl = arr.get::<ArrayImpl>();
+                    if let Some(bool_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::BooleanArray>() {
+                        for i in 0..bool_arr.len() {
+                            values.push(if bool_arr.is_null(i) { false } else { bool_arr.value(i) });
+                        }
+                        offsets.push(values.len() as i32);
+                    } else {
+                        return Err(arrays::ArrowError::InvalidArgument("All arrays must have the same type".to_string()));
+                    }
+                }
+
+                let values_arr = arrow_array::BooleanArray::from(values);
+                let list_arr = arrow_array::ListArray::try_new(
+                    Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Boolean, true)),
                     arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(offsets)),
                     Arc::new(values_arr),
                     None,
@@ -2037,6 +2226,226 @@ impl arrays::Guest for Component {
         }
 
         Err(arrays::ArrowError::InvalidArgument("ree_values requires a run-end encoded array".to_string()))
+    }
+
+    // ========== Binary Data Operations ==========
+
+    fn binary_get_byte(arr: arrays::ArrayBorrow<'_>, index: u64) -> Result<arrays::Array, arrays::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let idx = index as usize;
+
+        if let Some(bin_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::BinaryArray>() {
+            let result: arrow_array::Int32Array = bin_arr.iter()
+                .map(|opt| opt.and_then(|bytes| {
+                    bytes.get(idx).map(|&b| b as i32)
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(bin_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::LargeBinaryArray>() {
+            let result: arrow_array::Int32Array = bin_arr.iter()
+                .map(|opt| opt.and_then(|bytes| {
+                    bytes.get(idx).map(|&b| b as i32)
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("Expected binary array".to_string()))
+    }
+
+    fn binary_slice(arr: arrays::ArrayBorrow<'_>, start: i64, length: Option<u64>) -> Result<arrays::Array, arrays::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(bin_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::BinaryArray>() {
+            let result: arrow_array::BinaryArray = bin_arr.iter()
+                .map(|opt| opt.map(|bytes| {
+                    let len = bytes.len() as i64;
+                    let actual_start = if start < 0 {
+                        (len + start).max(0) as usize
+                    } else {
+                        start.min(len) as usize
+                    };
+                    let end = match length {
+                        Some(l) => (actual_start + l as usize).min(bytes.len()),
+                        None => bytes.len(),
+                    };
+                    &bytes[actual_start..end]
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(bin_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::LargeBinaryArray>() {
+            let result: arrow_array::LargeBinaryArray = bin_arr.iter()
+                .map(|opt| opt.map(|bytes| {
+                    let len = bytes.len() as i64;
+                    let actual_start = if start < 0 {
+                        (len + start).max(0) as usize
+                    } else {
+                        start.min(len) as usize
+                    };
+                    let end = match length {
+                        Some(l) => (actual_start + l as usize).min(bytes.len()),
+                        None => bytes.len(),
+                    };
+                    &bytes[actual_start..end]
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("Expected binary array".to_string()))
+    }
+
+    fn binary_concat(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, arrays::ArrowError> {
+        use arrow_array::Array as _;
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        if let (Some(left_arr), Some(right_arr)) = (
+            left_impl.inner.as_any().downcast_ref::<arrow_array::BinaryArray>(),
+            right_impl.inner.as_any().downcast_ref::<arrow_array::BinaryArray>(),
+        ) {
+            if left_arr.len() != right_arr.len() {
+                return Err(arrays::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+            }
+            let result: arrow_array::BinaryArray = left_arr.iter()
+                .zip(right_arr.iter())
+                .map(|(l, r)| match (l, r) {
+                    (Some(lb), Some(rb)) => {
+                        let mut concat = lb.to_vec();
+                        concat.extend_from_slice(rb);
+                        Some(concat)
+                    }
+                    _ => None,
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let (Some(left_arr), Some(right_arr)) = (
+            left_impl.inner.as_any().downcast_ref::<arrow_array::LargeBinaryArray>(),
+            right_impl.inner.as_any().downcast_ref::<arrow_array::LargeBinaryArray>(),
+        ) {
+            if left_arr.len() != right_arr.len() {
+                return Err(arrays::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+            }
+            let result: arrow_array::LargeBinaryArray = left_arr.iter()
+                .zip(right_arr.iter())
+                .map(|(l, r)| match (l, r) {
+                    (Some(lb), Some(rb)) => {
+                        let mut concat = lb.to_vec();
+                        concat.extend_from_slice(rb);
+                        Some(concat)
+                    }
+                    _ => None,
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("Expected binary arrays of same type".to_string()))
+    }
+
+    fn binary_length(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, arrays::ArrowError> {
+        use arrow_array::Array as _;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(bin_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::BinaryArray>() {
+            let result: arrow_array::Int64Array = bin_arr.iter()
+                .map(|opt| opt.map(|bytes| bytes.len() as i64))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(bin_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::LargeBinaryArray>() {
+            let result: arrow_array::Int64Array = bin_arr.iter()
+                .map(|opt| opt.map(|bytes| bytes.len() as i64))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(fsb_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::FixedSizeBinaryArray>() {
+            // All elements have the same size
+            let size = fsb_arr.value_length() as i64;
+            let result: arrow_array::Int64Array = (0..fsb_arr.len())
+                .map(|i| if fsb_arr.is_valid(i) { Some(size) } else { None })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("Expected binary array".to_string()))
+    }
+
+    fn binary_to_hex(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, arrays::ArrowError> {
+        use arrow_array::Array as _;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        fn bytes_to_hex(bytes: &[u8]) -> String {
+            bytes.iter().map(|b| format!("{:02x}", b)).collect()
+        }
+
+        if let Some(bin_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::BinaryArray>() {
+            let result: arrow_array::StringArray = bin_arr.iter()
+                .map(|opt| opt.map(bytes_to_hex))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(bin_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::LargeBinaryArray>() {
+            let result: arrow_array::StringArray = bin_arr.iter()
+                .map(|opt| opt.map(bytes_to_hex))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(fsb_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::FixedSizeBinaryArray>() {
+            let result: arrow_array::StringArray = (0..fsb_arr.len())
+                .map(|i| {
+                    if fsb_arr.is_valid(i) {
+                        Some(bytes_to_hex(fsb_arr.value(i)))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("Expected binary array".to_string()))
+    }
+
+    fn hex_to_binary(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, arrays::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        fn hex_to_bytes(hex: &str) -> Option<Vec<u8>> {
+            let hex = hex.trim();
+            if hex.len() % 2 != 0 {
+                return None;
+            }
+            (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+                .collect()
+        }
+
+        if let Some(string_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let result: arrow_array::BinaryArray = string_arr.iter()
+                .map(|opt| opt.and_then(hex_to_bytes))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(string_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::LargeStringArray>() {
+            let result: arrow_array::LargeBinaryArray = string_arr.iter()
+                .map(|opt| opt.and_then(hex_to_bytes))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("Expected string array".to_string()))
     }
 
     // ========== Array Generation Utilities ==========
@@ -4000,6 +4409,67 @@ impl record_batch::Guest for Component {
         let batch_impl = batch.get::<RecordBatchImpl>();
         let schema_impl = expected_schema.get::<SchemaImpl>();
         validate_batch_internal(&batch_impl.inner, &schema_impl.inner)
+    }
+
+    fn record_batch_with_schema(batch: record_batch::RecordBatchBorrow<'_>, new_schema: types::Schema) -> Result<record_batch::RecordBatch, types::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let schema_impl = new_schema.get::<SchemaImpl>();
+
+        // Verify column count matches
+        if batch_impl.inner.num_columns() != schema_impl.inner.fields().len() {
+            return Err(types::ArrowError::SchemaMismatch(format!(
+                "Column count mismatch: batch has {} columns, schema has {} fields",
+                batch_impl.inner.num_columns(),
+                schema_impl.inner.fields().len()
+            )));
+        }
+
+        // Create new batch with the new schema
+        let columns: Vec<Arc<dyn arrow_array::Array>> = batch_impl.inner.columns().to_vec();
+
+        let result = ArrowRecordBatch::try_new(schema_impl.inner.clone(), columns)
+            .map_err(|e| types::ArrowError::SchemaMismatch(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn record_batch_rename_columns(batch: record_batch::RecordBatchBorrow<'_>, new_names: Vec<String>) -> Result<record_batch::RecordBatch, types::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+
+        if new_names.len() != batch_impl.inner.num_columns() {
+            return Err(types::ArrowError::InvalidArgument(format!(
+                "Number of names ({}) must match number of columns ({})",
+                new_names.len(),
+                batch_impl.inner.num_columns()
+            )));
+        }
+
+        // Build new schema with renamed fields
+        let old_schema = batch_impl.inner.schema();
+        let new_fields: Vec<Arc<arrow_schema::Field>> = old_schema.fields()
+            .iter()
+            .zip(new_names.iter())
+            .map(|(field, new_name)| {
+                Arc::new(arrow_schema::Field::new(
+                    new_name.clone(),
+                    field.data_type().clone(),
+                    field.is_nullable(),
+                ).with_metadata(field.metadata().clone()))
+            })
+            .collect();
+
+        let new_schema = Arc::new(arrow_schema::Schema::new_with_metadata(
+            arrow_schema::Fields::from(new_fields),
+            old_schema.metadata().clone(),
+        ));
+
+        // Create new batch with the new schema
+        let columns: Vec<Arc<dyn arrow_array::Array>> = batch_impl.inner.columns().to_vec();
+
+        let result = ArrowRecordBatch::try_new(new_schema, columns)
+            .map_err(|e| types::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
     }
 }
 
@@ -7457,13 +7927,31 @@ impl compute::Guest for Component {
         Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
     }
 
-    fn window_lead(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, offset: u32, _default_value: Option<i64>) -> Result<arrays::Array, compute::ArrowError> {
+    fn window_lead(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, offset: u32, default_value: Option<i64>) -> Result<arrays::Array, compute::ArrowError> {
         let arr_impl = arr.get::<ArrayImpl>();
         let len = arr_impl.inner.len();
 
         let (partitions, sort_indices) = compute_window_partitions_and_order(&partition_by, &order_by, &order_options)?;
 
-        // Macro to avoid repeating the same logic for each type
+        // Special handling for Int64Array to support default_value
+        if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let mut result: Vec<Option<i64>> = vec![default_value; len];
+            for (start, end) in &partitions {
+                for i in *start..*end {
+                    let target = i + offset as usize;
+                    let original_idx = sort_indices[i];
+                    if target < *end {
+                        let lead_idx = sort_indices[target];
+                        result[original_idx] = get_i64_opt(typed_arr, lead_idx);
+                    }
+                    // else: result[original_idx] already has default_value
+                }
+            }
+            let result_arr: arrow_array::Int64Array = result.into_iter().collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }));
+        }
+
+        // Macro for other types (no default value support)
         macro_rules! impl_lead {
             ($arr_type:ty, $result_type:ty, $get_fn:ident) => {
                 if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
@@ -7484,8 +7972,7 @@ impl compute::Guest for Component {
             };
         }
 
-        // Integer types
-        impl_lead!(arrow_array::Int64Array, i64, get_i64_opt);
+        // Integer types (except Int64 which is handled above)
         impl_lead!(arrow_array::Int32Array, i32, get_i32_opt);
         impl_lead!(arrow_array::Int16Array, i16, get_i16_opt);
         impl_lead!(arrow_array::Int8Array, i8, get_i8_opt);
@@ -7521,13 +8008,31 @@ impl compute::Guest for Component {
         Err(compute::ArrowError::InvalidArgument("window_lead: unsupported array type".to_string()))
     }
 
-    fn window_lag(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, offset: u32, _default_value: Option<i64>) -> Result<arrays::Array, compute::ArrowError> {
+    fn window_lag(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, offset: u32, default_value: Option<i64>) -> Result<arrays::Array, compute::ArrowError> {
         let arr_impl = arr.get::<ArrayImpl>();
         let len = arr_impl.inner.len();
 
         let (partitions, sort_indices) = compute_window_partitions_and_order(&partition_by, &order_by, &order_options)?;
 
-        // Macro to avoid repeating the same logic for each type
+        // Special handling for Int64Array to support default_value
+        if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let mut result: Vec<Option<i64>> = vec![default_value; len];
+            for (start, end) in &partitions {
+                for i in *start..*end {
+                    let original_idx = sort_indices[i];
+                    if i >= *start + offset as usize {
+                        let target = i - offset as usize;
+                        let lag_idx = sort_indices[target];
+                        result[original_idx] = get_i64_opt(typed_arr, lag_idx);
+                    }
+                    // else: result[original_idx] already has default_value
+                }
+            }
+            let result_arr: arrow_array::Int64Array = result.into_iter().collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }));
+        }
+
+        // Macro for other types (no default value support)
         macro_rules! impl_lag {
             ($arr_type:ty, $result_type:ty, $get_fn:ident) => {
                 if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
@@ -7548,8 +8053,7 @@ impl compute::Guest for Component {
             };
         }
 
-        // Integer types
-        impl_lag!(arrow_array::Int64Array, i64, get_i64_opt);
+        // Integer types (except Int64 which is handled above)
         impl_lag!(arrow_array::Int32Array, i32, get_i32_opt);
         impl_lag!(arrow_array::Int16Array, i16, get_i16_opt);
         impl_lag!(arrow_array::Int8Array, i8, get_i8_opt);
@@ -7585,7 +8089,7 @@ impl compute::Guest for Component {
         Err(compute::ArrowError::InvalidArgument("window_lag: unsupported array type".to_string()))
     }
 
-    fn window_first_value(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, _frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
+    fn window_first_value(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
         let arr_impl = arr.get::<ArrayImpl>();
         let len = arr_impl.inner.len();
 
@@ -7597,11 +8101,12 @@ impl compute::Guest for Component {
                 if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
                     let mut result: Vec<Option<$result_type>> = vec![None; len];
                     for (start, end) in &partitions {
-                        if *start < *end {
-                            let first_idx = sort_indices[*start];
-                            let first_val = $get_fn(typed_arr, first_idx);
-                            for i in *start..*end {
-                                result[sort_indices[i]] = first_val.clone();
+                        for i in *start..*end {
+                            let current_pos = i - *start;
+                            let (frame_start, frame_end) = compute_frame_bounds(&frame, current_pos, *start, *end);
+                            if frame_start < frame_end {
+                                let first_idx = sort_indices[frame_start];
+                                result[sort_indices[i]] = $get_fn(typed_arr, first_idx);
                             }
                         }
                     }
@@ -7632,11 +8137,12 @@ impl compute::Guest for Component {
         if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
             let mut result: Vec<Option<String>> = vec![None; len];
             for (start, end) in &partitions {
-                if *start < *end {
-                    let first_idx = sort_indices[*start];
-                    let first_val = get_string_opt(str_arr, first_idx);
-                    for i in *start..*end {
-                        result[sort_indices[i]] = first_val.clone();
+                for i in *start..*end {
+                    let current_pos = i - *start;
+                    let (frame_start, frame_end) = compute_frame_bounds(&frame, current_pos, *start, *end);
+                    if frame_start < frame_end {
+                        let first_idx = sort_indices[frame_start];
+                        result[sort_indices[i]] = get_string_opt(str_arr, first_idx);
                     }
                 }
             }
@@ -7647,7 +8153,7 @@ impl compute::Guest for Component {
         Err(compute::ArrowError::InvalidArgument("window_first_value: unsupported array type".to_string()))
     }
 
-    fn window_last_value(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, _frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
+    fn window_last_value(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
         let arr_impl = arr.get::<ArrayImpl>();
         let len = arr_impl.inner.len();
 
@@ -7659,11 +8165,12 @@ impl compute::Guest for Component {
                 if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
                     let mut result: Vec<Option<$result_type>> = vec![None; len];
                     for (start, end) in &partitions {
-                        if *start < *end {
-                            let last_idx = sort_indices[*end - 1];
-                            let last_val = $get_fn(typed_arr, last_idx);
-                            for i in *start..*end {
-                                result[sort_indices[i]] = last_val.clone();
+                        for i in *start..*end {
+                            let current_pos = i - *start;
+                            let (frame_start, frame_end) = compute_frame_bounds(&frame, current_pos, *start, *end);
+                            if frame_start < frame_end {
+                                let last_idx = sort_indices[frame_end - 1];
+                                result[sort_indices[i]] = $get_fn(typed_arr, last_idx);
                             }
                         }
                     }
@@ -7694,11 +8201,12 @@ impl compute::Guest for Component {
         if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
             let mut result: Vec<Option<String>> = vec![None; len];
             for (start, end) in &partitions {
-                if *start < *end {
-                    let last_idx = sort_indices[*end - 1];
-                    let last_val = get_string_opt(str_arr, last_idx);
-                    for i in *start..*end {
-                        result[sort_indices[i]] = last_val.clone();
+                for i in *start..*end {
+                    let current_pos = i - *start;
+                    let (frame_start, frame_end) = compute_frame_bounds(&frame, current_pos, *start, *end);
+                    if frame_start < frame_end {
+                        let last_idx = sort_indices[frame_end - 1];
+                        result[sort_indices[i]] = get_string_opt(str_arr, last_idx);
                     }
                 }
             }
@@ -7709,7 +8217,7 @@ impl compute::Guest for Component {
         Err(compute::ArrowError::InvalidArgument("window_last_value: unsupported array type".to_string()))
     }
 
-    fn window_nth_value(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, n: u32, _frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
+    fn window_nth_value(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, n: u32, frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
         if n == 0 {
             return Err(compute::ArrowError::InvalidArgument("nth_value n must be >= 1".to_string()));
         }
@@ -7726,11 +8234,12 @@ impl compute::Guest for Component {
                 if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
                     let mut result: Vec<Option<$result_type>> = vec![None; len];
                     for (start, end) in &partitions {
-                        if *start + nth_offset < *end {
-                            let nth_idx = sort_indices[*start + nth_offset];
-                            let nth_val = $get_fn(typed_arr, nth_idx);
-                            for i in *start..*end {
-                                result[sort_indices[i]] = nth_val.clone();
+                        for i in *start..*end {
+                            let current_pos = i - *start;
+                            let (frame_start, frame_end) = compute_frame_bounds(&frame, current_pos, *start, *end);
+                            if frame_start + nth_offset < frame_end {
+                                let nth_idx = sort_indices[frame_start + nth_offset];
+                                result[sort_indices[i]] = $get_fn(typed_arr, nth_idx);
                             }
                         }
                     }
@@ -7761,11 +8270,12 @@ impl compute::Guest for Component {
         if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
             let mut result: Vec<Option<String>> = vec![None; len];
             for (start, end) in &partitions {
-                if *start + nth_offset < *end {
-                    let nth_idx = sort_indices[*start + nth_offset];
-                    let nth_val = get_string_opt(str_arr, nth_idx);
-                    for i in *start..*end {
-                        result[sort_indices[i]] = nth_val.clone();
+                for i in *start..*end {
+                    let current_pos = i - *start;
+                    let (frame_start, frame_end) = compute_frame_bounds(&frame, current_pos, *start, *end);
+                    if frame_start + nth_offset < frame_end {
+                        let nth_idx = sort_indices[frame_start + nth_offset];
+                        result[sort_indices[i]] = get_string_opt(str_arr, nth_idx);
                     }
                 }
             }
@@ -7776,7 +8286,7 @@ impl compute::Guest for Component {
         Err(compute::ArrowError::InvalidArgument("window_nth_value: unsupported array type".to_string()))
     }
 
-    fn window_sum(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, _frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
+    fn window_sum(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
         let arr_impl = arr.get::<ArrayImpl>();
         let values = collect_f64_values(&arr_impl.inner)?;
         let len = values.len();
@@ -7786,11 +8296,18 @@ impl compute::Guest for Component {
         let mut result = vec![0.0f64; len];
 
         for (start, end) in partitions {
-            let mut running_sum = 0.0f64;
             for i in start..end {
+                let current_pos = i - start;
+                let (frame_start, frame_end) = compute_frame_bounds(&frame, current_pos, start, end);
+
+                let mut sum = 0.0f64;
+                for j in frame_start..frame_end {
+                    let idx = sort_indices[j];
+                    sum += values[idx];
+                }
+
                 let original_idx = sort_indices[i];
-                running_sum += values[original_idx];
-                result[original_idx] = running_sum;
+                result[original_idx] = sum;
             }
         }
 
@@ -7798,29 +8315,7 @@ impl compute::Guest for Component {
         Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
     }
 
-    fn window_avg(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, _frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
-        let arr_impl = arr.get::<ArrayImpl>();
-        let values = collect_f64_values(&arr_impl.inner)?;
-        let len = values.len();
-
-        let (partitions, sort_indices) = compute_window_partitions_and_order(&partition_by, &order_by, &order_options)?;
-
-        let mut result = vec![0.0f64; len];
-
-        for (start, end) in partitions {
-            let mut running_sum = 0.0f64;
-            for (count, i) in (start..end).enumerate() {
-                let original_idx = sort_indices[i];
-                running_sum += values[original_idx];
-                result[original_idx] = running_sum / (count + 1) as f64;
-            }
-        }
-
-        let result_arr: arrow_array::Float64Array = result.into_iter().map(Some).collect();
-        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
-    }
-
-    fn window_min(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, _frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
+    fn window_avg(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
         let arr_impl = arr.get::<ArrayImpl>();
         let values = collect_f64_values(&arr_impl.inner)?;
         let len = values.len();
@@ -7830,11 +8325,20 @@ impl compute::Guest for Component {
         let mut result = vec![f64::NAN; len];
 
         for (start, end) in partitions {
-            let mut running_min = f64::INFINITY;
             for i in start..end {
-                let original_idx = sort_indices[i];
-                running_min = running_min.min(values[original_idx]);
-                result[original_idx] = running_min;
+                let current_pos = i - start;
+                let (frame_start, frame_end) = compute_frame_bounds(&frame, current_pos, start, end);
+
+                let frame_len = frame_end - frame_start;
+                if frame_len > 0 {
+                    let mut sum = 0.0f64;
+                    for j in frame_start..frame_end {
+                        let idx = sort_indices[j];
+                        sum += values[idx];
+                    }
+                    let original_idx = sort_indices[i];
+                    result[original_idx] = sum / frame_len as f64;
+                }
             }
         }
 
@@ -7842,7 +8346,7 @@ impl compute::Guest for Component {
         Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
     }
 
-    fn window_max(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, _frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
+    fn window_min(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
         let arr_impl = arr.get::<ArrayImpl>();
         let values = collect_f64_values(&arr_impl.inner)?;
         let len = values.len();
@@ -7852,11 +8356,19 @@ impl compute::Guest for Component {
         let mut result = vec![f64::NAN; len];
 
         for (start, end) in partitions {
-            let mut running_max = f64::NEG_INFINITY;
             for i in start..end {
-                let original_idx = sort_indices[i];
-                running_max = running_max.max(values[original_idx]);
-                result[original_idx] = running_max;
+                let current_pos = i - start;
+                let (frame_start, frame_end) = compute_frame_bounds(&frame, current_pos, start, end);
+
+                if frame_end > frame_start {
+                    let mut min_val = f64::INFINITY;
+                    for j in frame_start..frame_end {
+                        let idx = sort_indices[j];
+                        min_val = min_val.min(values[idx]);
+                    }
+                    let original_idx = sort_indices[i];
+                    result[original_idx] = min_val;
+                }
             }
         }
 
@@ -7864,7 +8376,37 @@ impl compute::Guest for Component {
         Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
     }
 
-    fn window_count(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, _frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
+    fn window_max(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_f64_values(&arr_impl.inner)?;
+        let len = values.len();
+
+        let (partitions, sort_indices) = compute_window_partitions_and_order(&partition_by, &order_by, &order_options)?;
+
+        let mut result = vec![f64::NAN; len];
+
+        for (start, end) in partitions {
+            for i in start..end {
+                let current_pos = i - start;
+                let (frame_start, frame_end) = compute_frame_bounds(&frame, current_pos, start, end);
+
+                if frame_end > frame_start {
+                    let mut max_val = f64::NEG_INFINITY;
+                    for j in frame_start..frame_end {
+                        let idx = sort_indices[j];
+                        max_val = max_val.max(values[idx]);
+                    }
+                    let original_idx = sort_indices[i];
+                    result[original_idx] = max_val;
+                }
+            }
+        }
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().map(Some).collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn window_count(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
         let arr_impl = arr.get::<ArrayImpl>();
         let len = arr_impl.inner.len();
 
@@ -7873,13 +8415,19 @@ impl compute::Guest for Component {
         let mut result = vec![0u64; len];
 
         for (start, end) in partitions {
-            let mut running_count = 0u64;
             for i in start..end {
-                let original_idx = sort_indices[i];
-                if !arr_impl.inner.is_null(original_idx) {
-                    running_count += 1;
+                let current_pos = i - start;
+                let (frame_start, frame_end) = compute_frame_bounds(&frame, current_pos, start, end);
+
+                let mut count = 0u64;
+                for j in frame_start..frame_end {
+                    let idx = sort_indices[j];
+                    if !arr_impl.inner.is_null(idx) {
+                        count += 1;
+                    }
                 }
-                result[original_idx] = running_count;
+                let original_idx = sort_indices[i];
+                result[original_idx] = count;
             }
         }
 
@@ -8012,6 +8560,590 @@ impl compute::Guest for Component {
             }
         }
         Ok(arrays::Array::new(ArrayImpl { inner: arr_impl.inner.slice(0, 0) }))
+    }
+
+    // ========== Advanced Aggregations (Phase 10.5) ==========
+
+    fn sum_checked_i64(arr: arrays::ArrayBorrow<'_>) -> Result<Option<i64>, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let mut sum: i64 = 0;
+            let mut has_value = false;
+            for opt in int_arr.iter() {
+                if let Some(v) = opt {
+                    sum = sum.checked_add(v)
+                        .ok_or_else(|| compute::ArrowError::ComputeError("Integer overflow in sum".to_string()))?;
+                    has_value = true;
+                }
+            }
+            return Ok(if has_value { Some(sum) } else { None });
+        }
+
+        if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            let mut sum: i64 = 0;
+            let mut has_value = false;
+            for opt in int_arr.iter() {
+                if let Some(v) = opt {
+                    sum = sum.checked_add(v as i64)
+                        .ok_or_else(|| compute::ArrowError::ComputeError("Integer overflow in sum".to_string()))?;
+                    has_value = true;
+                }
+            }
+            return Ok(if has_value { Some(sum) } else { None });
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected integer array".to_string()))
+    }
+
+    fn sum_checked_i32(arr: arrays::ArrayBorrow<'_>) -> Result<Option<i32>, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            let mut sum: i32 = 0;
+            let mut has_value = false;
+            for opt in int_arr.iter() {
+                if let Some(v) = opt {
+                    sum = sum.checked_add(v)
+                        .ok_or_else(|| compute::ArrowError::ComputeError("Integer overflow in sum".to_string()))?;
+                    has_value = true;
+                }
+            }
+            return Ok(if has_value { Some(sum) } else { None });
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected Int32 array".to_string()))
+    }
+
+    fn product_i64(arr: arrays::ArrayBorrow<'_>) -> Result<Option<i64>, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        macro_rules! compute_product {
+            ($arr_type:ty) => {
+                if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
+                    let mut product: i64 = 1;
+                    let mut has_value = false;
+                    for opt in typed_arr.iter() {
+                        if let Some(v) = opt {
+                            product = product.wrapping_mul(v as i64);
+                            has_value = true;
+                        }
+                    }
+                    return Ok(if has_value { Some(product) } else { None });
+                }
+            };
+        }
+
+        compute_product!(arrow_array::Int64Array);
+        compute_product!(arrow_array::Int32Array);
+        compute_product!(arrow_array::Int16Array);
+        compute_product!(arrow_array::Int8Array);
+        compute_product!(arrow_array::UInt64Array);
+        compute_product!(arrow_array::UInt32Array);
+        compute_product!(arrow_array::UInt16Array);
+        compute_product!(arrow_array::UInt8Array);
+
+        Err(compute::ArrowError::InvalidArgument("Expected integer array".to_string()))
+    }
+
+    fn product_f64(arr: arrays::ArrayBorrow<'_>) -> Result<Option<f64>, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        macro_rules! compute_product {
+            ($arr_type:ty) => {
+                if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
+                    let mut product: f64 = 1.0;
+                    let mut has_value = false;
+                    for opt in typed_arr.iter() {
+                        if let Some(v) = opt {
+                            product *= v as f64;
+                            has_value = true;
+                        }
+                    }
+                    return Ok(if has_value { Some(product) } else { None });
+                }
+            };
+        }
+
+        compute_product!(arrow_array::Float64Array);
+        compute_product!(arrow_array::Float32Array);
+        compute_product!(arrow_array::Int64Array);
+        compute_product!(arrow_array::Int32Array);
+
+        Err(compute::ArrowError::InvalidArgument("Expected numeric array".to_string()))
+    }
+
+    fn geometric_mean(arr: arrays::ArrayBorrow<'_>) -> Result<Option<f64>, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        macro_rules! compute_geom_mean {
+            ($arr_type:ty) => {
+                if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
+                    let mut log_sum: f64 = 0.0;
+                    let mut count: u64 = 0;
+                    for opt in typed_arr.iter() {
+                        if let Some(v) = opt {
+                            let f = v as f64;
+                            if f <= 0.0 {
+                                return Err(compute::ArrowError::ComputeError(
+                                    "Geometric mean requires positive values".to_string()
+                                ));
+                            }
+                            log_sum += f.ln();
+                            count += 1;
+                        }
+                    }
+                    if count == 0 {
+                        return Ok(None);
+                    }
+                    return Ok(Some((log_sum / count as f64).exp()));
+                }
+            };
+        }
+
+        compute_geom_mean!(arrow_array::Float64Array);
+        compute_geom_mean!(arrow_array::Float32Array);
+        compute_geom_mean!(arrow_array::Int64Array);
+        compute_geom_mean!(arrow_array::Int32Array);
+
+        Err(compute::ArrowError::InvalidArgument("Expected numeric array".to_string()))
+    }
+
+    fn harmonic_mean(arr: arrays::ArrayBorrow<'_>) -> Result<Option<f64>, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        macro_rules! compute_harm_mean {
+            ($arr_type:ty) => {
+                if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
+                    let mut recip_sum: f64 = 0.0;
+                    let mut count: u64 = 0;
+                    for opt in typed_arr.iter() {
+                        if let Some(v) = opt {
+                            let f = v as f64;
+                            if f == 0.0 {
+                                return Err(compute::ArrowError::ComputeError(
+                                    "Harmonic mean cannot include zero values".to_string()
+                                ));
+                            }
+                            recip_sum += 1.0 / f;
+                            count += 1;
+                        }
+                    }
+                    if count == 0 {
+                        return Ok(None);
+                    }
+                    return Ok(Some(count as f64 / recip_sum));
+                }
+            };
+        }
+
+        compute_harm_mean!(arrow_array::Float64Array);
+        compute_harm_mean!(arrow_array::Float32Array);
+        compute_harm_mean!(arrow_array::Int64Array);
+        compute_harm_mean!(arrow_array::Int32Array);
+
+        Err(compute::ArrowError::InvalidArgument("Expected numeric array".to_string()))
+    }
+
+    fn rms(arr: arrays::ArrayBorrow<'_>) -> Result<Option<f64>, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        macro_rules! compute_rms {
+            ($arr_type:ty) => {
+                if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
+                    let mut sq_sum: f64 = 0.0;
+                    let mut count: u64 = 0;
+                    for opt in typed_arr.iter() {
+                        if let Some(v) = opt {
+                            let f = v as f64;
+                            sq_sum += f * f;
+                            count += 1;
+                        }
+                    }
+                    if count == 0 {
+                        return Ok(None);
+                    }
+                    return Ok(Some((sq_sum / count as f64).sqrt()));
+                }
+            };
+        }
+
+        compute_rms!(arrow_array::Float64Array);
+        compute_rms!(arrow_array::Float32Array);
+        compute_rms!(arrow_array::Int64Array);
+        compute_rms!(arrow_array::Int32Array);
+
+        Err(compute::ArrowError::InvalidArgument("Expected numeric array".to_string()))
+    }
+
+    fn count_distinct(arr: arrays::ArrayBorrow<'_>) -> Result<u64, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        use std::collections::HashSet;
+
+        macro_rules! count_distinct_impl {
+            ($arr_type:ty, $hash_type:ty) => {
+                if let Some(typed_arr) = arr_impl.inner.as_any().downcast_ref::<$arr_type>() {
+                    let mut set: HashSet<$hash_type> = HashSet::new();
+                    for opt in typed_arr.iter() {
+                        if let Some(v) = opt {
+                            set.insert(v as $hash_type);
+                        }
+                    }
+                    return Ok(set.len() as u64);
+                }
+            };
+        }
+
+        count_distinct_impl!(arrow_array::Int64Array, i64);
+        count_distinct_impl!(arrow_array::Int32Array, i32);
+        count_distinct_impl!(arrow_array::Int16Array, i16);
+        count_distinct_impl!(arrow_array::Int8Array, i8);
+        count_distinct_impl!(arrow_array::UInt64Array, u64);
+        count_distinct_impl!(arrow_array::UInt32Array, u32);
+        count_distinct_impl!(arrow_array::UInt16Array, u16);
+        count_distinct_impl!(arrow_array::UInt8Array, u8);
+
+        if let Some(string_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let mut set: HashSet<&str> = HashSet::new();
+            for opt in string_arr.iter() {
+                if let Some(v) = opt {
+                    set.insert(v);
+                }
+            }
+            return Ok(set.len() as u64);
+        }
+
+        if let Some(bool_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::BooleanArray>() {
+            let mut set: HashSet<bool> = HashSet::new();
+            for opt in bool_arr.iter() {
+                if let Some(v) = opt {
+                    set.insert(v);
+                }
+            }
+            return Ok(set.len() as u64);
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Unsupported array type for count_distinct".to_string()))
+    }
+
+    fn count_distinct_approx(arr: arrays::ArrayBorrow<'_>) -> Result<u64, compute::ArrowError> {
+        // For now, use exact count. A proper implementation would use HyperLogLog.
+        // This is a placeholder that provides correct results but not the memory savings
+        // of a probabilistic data structure.
+        Self::count_distinct(arr)
+    }
+
+    // ========== Selection & Merge Operations (Phase 10.2) ==========
+
+    fn lexsort_limit(input_arrays: Vec<arrays::Array>, limit: u64, descending: Vec<bool>, nulls_first: Vec<bool>) -> Result<Vec<arrays::Array>, compute::ArrowError> {
+        if input_arrays.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let len = input_arrays.len();
+        if descending.len() != len || nulls_first.len() != len {
+            return Err(compute::ArrowError::InvalidArgument(
+                "descending and nulls_first must have same length as arrays".to_string()
+            ));
+        }
+
+        // Build sort columns
+        let sort_columns: Vec<arrow_ord::sort::SortColumn> = input_arrays.iter()
+            .zip(descending.iter().zip(nulls_first.iter()))
+            .map(|(arr, (&desc, &nf))| {
+                let arr_impl = arr.get::<ArrayImpl>();
+                arrow_ord::sort::SortColumn {
+                    values: arr_impl.inner.clone(),
+                    options: Some(arrow_ord::sort::SortOptions {
+                        descending: desc,
+                        nulls_first: nf,
+                    }),
+                }
+            })
+            .collect();
+
+        // Get lexsort indices with limit
+        let indices = arrow_ord::sort::lexsort_to_indices(&sort_columns, Some(limit as usize))
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        // Take from each array using the sorted indices
+        let mut results = Vec::with_capacity(len);
+        for arr in &input_arrays {
+            let arr_impl = arr.get::<ArrayImpl>();
+            let taken = arrow_select::take::take(&*arr_impl.inner, &indices, None)
+                .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+            results.push(arrays::Array::new(ArrayImpl { inner: taken }));
+        }
+
+        Ok(results)
+    }
+
+    fn partition_ranges(arr: arrays::ArrayBorrow<'_>) -> Result<Vec<(u64, u64)>, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let len = arr_impl.inner.len();
+
+        if len == 0 {
+            return Ok(vec![]);
+        }
+
+        // Find boundaries where values change
+        let mut ranges = Vec::new();
+        let mut start = 0usize;
+
+        for i in 1..len {
+            if !arrays_equal_at_index(&arr_impl.inner, i, i - 1) {
+                ranges.push((start as u64, (i - start) as u64));
+                start = i;
+            }
+        }
+        // Add final range
+        ranges.push((start as u64, (len - start) as u64));
+
+        Ok(ranges)
+    }
+
+    fn merge_sorted(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>, descending: bool) -> Result<arrays::Array, compute::ArrowError> {
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        // Concatenate arrays first
+        let combined = arrow_select::concat::concat(&[&*left_impl.inner, &*right_impl.inner])
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        // Sort the combined array
+        let options = arrow_ord::sort::SortOptions { descending, nulls_first: false };
+        let indices = arrow_ord::sort::sort_to_indices(&combined, Some(options), None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        let result = arrow_select::take::take(&*combined, &indices, None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    fn zip_select(mask: arrays::ArrayBorrow<'_>, left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let mask_impl = mask.get::<ArrayImpl>();
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        let bool_mask = mask_impl.inner.as_any().downcast_ref::<arrow_array::BooleanArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("mask must be boolean array".to_string()))?;
+
+        // Try different array types
+        macro_rules! try_zip {
+            ($arr_type:ty) => {
+                if let (Some(l), Some(r)) = (
+                    left_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                    right_impl.inner.as_any().downcast_ref::<$arr_type>(),
+                ) {
+                    let result = arrow_select::zip::zip(bool_mask, l, r)
+                        .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+                    return Ok(arrays::Array::new(ArrayImpl { inner: result }));
+                }
+            };
+        }
+
+        try_zip!(arrow_array::Int64Array);
+        try_zip!(arrow_array::Int32Array);
+        try_zip!(arrow_array::Int16Array);
+        try_zip!(arrow_array::Int8Array);
+        try_zip!(arrow_array::UInt64Array);
+        try_zip!(arrow_array::UInt32Array);
+        try_zip!(arrow_array::UInt16Array);
+        try_zip!(arrow_array::UInt8Array);
+        try_zip!(arrow_array::Float64Array);
+        try_zip!(arrow_array::Float32Array);
+        try_zip!(arrow_array::BooleanArray);
+        try_zip!(arrow_array::StringArray);
+
+        Err(compute::ArrowError::InvalidArgument("zip_select: unsupported array type or mismatched types".to_string()))
+    }
+
+    // ========== Interval Arithmetic ==========
+
+    fn interval_add(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_buffer::IntervalMonthDayNano;
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        if let (Some(l), Some(r)) = (
+            left_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
+            right_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
+        ) {
+            use arrow_array::Array as _;
+            if l.len() != r.len() {
+                return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+            }
+            let result: arrow_array::IntervalMonthDayNanoArray = l.iter()
+                .zip(r.iter())
+                .map(|(lv, rv)| match (lv, rv) {
+                    (Some(li), Some(ri)) => {
+                        let months = li.months.wrapping_add(ri.months);
+                        let days = li.days.wrapping_add(ri.days);
+                        let nanos = li.nanoseconds.wrapping_add(ri.nanoseconds);
+                        Some(IntervalMonthDayNano::new(months, days, nanos))
+                    }
+                    _ => None,
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("interval_add requires IntervalMonthDayNano arrays".to_string()))
+    }
+
+    fn interval_subtract(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_buffer::IntervalMonthDayNano;
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        if let (Some(l), Some(r)) = (
+            left_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
+            right_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
+        ) {
+            use arrow_array::Array as _;
+            if l.len() != r.len() {
+                return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+            }
+            let result: arrow_array::IntervalMonthDayNanoArray = l.iter()
+                .zip(r.iter())
+                .map(|(lv, rv)| match (lv, rv) {
+                    (Some(li), Some(ri)) => {
+                        let months = li.months.wrapping_sub(ri.months);
+                        let days = li.days.wrapping_sub(ri.days);
+                        let nanos = li.nanoseconds.wrapping_sub(ri.nanoseconds);
+                        Some(IntervalMonthDayNano::new(months, days, nanos))
+                    }
+                    _ => None,
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("interval_subtract requires IntervalMonthDayNano arrays".to_string()))
+    }
+
+    fn interval_multiply_scalar(arr: arrays::ArrayBorrow<'_>, factor: i64) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_buffer::IntervalMonthDayNano;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(interval_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>() {
+            let result: arrow_array::IntervalMonthDayNanoArray = interval_arr.iter()
+                .map(|opt| opt.map(|i| {
+                    let new_months = i.months.wrapping_mul(factor as i32);
+                    let new_days = i.days.wrapping_mul(factor as i32);
+                    let new_nanos = i.nanoseconds.wrapping_mul(factor);
+                    IntervalMonthDayNano::new(new_months, new_days, new_nanos)
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("interval_multiply_scalar requires IntervalMonthDayNano array".to_string()))
+    }
+
+    fn interval_negate(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_buffer::IntervalMonthDayNano;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(interval_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>() {
+            let result: arrow_array::IntervalMonthDayNanoArray = interval_arr.iter()
+                .map(|opt| opt.map(|i| {
+                    let new_months = i.months.wrapping_neg();
+                    let new_days = i.days.wrapping_neg();
+                    let new_nanos = i.nanoseconds.wrapping_neg();
+                    IntervalMonthDayNano::new(new_months, new_days, new_nanos)
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("interval_negate requires IntervalMonthDayNano array".to_string()))
+    }
+
+    fn interval_eq(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        if let (Some(l), Some(r)) = (
+            left_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
+            right_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
+        ) {
+            use arrow_array::Array as _;
+            if l.len() != r.len() {
+                return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+            }
+            let result: arrow_array::BooleanArray = l.iter()
+                .zip(r.iter())
+                .map(|(lv, rv)| match (lv, rv) {
+                    (Some(li), Some(ri)) => Some(li == ri),
+                    _ => None,
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("interval_eq requires IntervalMonthDayNano arrays".to_string()))
+    }
+
+    fn interval_lt(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        if let (Some(l), Some(r)) = (
+            left_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
+            right_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
+        ) {
+            use arrow_array::Array as _;
+            if l.len() != r.len() {
+                return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+            }
+            // Compare by total: months*30*24*60*60*1e9 + days*24*60*60*1e9 + nanos (approximate)
+            let result: arrow_array::BooleanArray = l.iter()
+                .zip(r.iter())
+                .map(|(lv, rv)| match (lv, rv) {
+                    (Some(li), Some(ri)) => {
+                        // Approximate comparison (months as 30 days)
+                        let l_total_nanos = li.months as i64 * 30 * 86400_000_000_000 + li.days as i64 * 86400_000_000_000 + li.nanoseconds;
+                        let r_total_nanos = ri.months as i64 * 30 * 86400_000_000_000 + ri.days as i64 * 86400_000_000_000 + ri.nanoseconds;
+                        Some(l_total_nanos < r_total_nanos)
+                    }
+                    _ => None,
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("interval_lt requires IntervalMonthDayNano arrays".to_string()))
+    }
+
+    fn interval_gt(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        if let (Some(l), Some(r)) = (
+            left_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
+            right_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
+        ) {
+            use arrow_array::Array as _;
+            if l.len() != r.len() {
+                return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+            }
+            let result: arrow_array::BooleanArray = l.iter()
+                .zip(r.iter())
+                .map(|(lv, rv)| match (lv, rv) {
+                    (Some(li), Some(ri)) => {
+                        let l_total_nanos = li.months as i64 * 30 * 86400_000_000_000 + li.days as i64 * 86400_000_000_000 + li.nanoseconds;
+                        let r_total_nanos = ri.months as i64 * 30 * 86400_000_000_000 + ri.days as i64 * 86400_000_000_000 + ri.nanoseconds;
+                        Some(l_total_nanos > r_total_nanos)
+                    }
+                    _ => None,
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("interval_gt requires IntervalMonthDayNano arrays".to_string()))
     }
 
     // ========== Bitwise Operations ==========
@@ -8739,6 +9871,83 @@ impl compute::Guest for Component {
             .collect();
 
         Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn substring_by_char(arr: arrays::ArrayBorrow<'_>, start: i64, length: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let string_arr = arr_impl.inner.as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let result: arrow_array::StringArray = string_arr.iter()
+            .map(|opt| opt.map(|s| {
+                let chars: Vec<char> = s.chars().collect();
+                let len = chars.len() as i64;
+
+                // Handle negative start (from end)
+                let actual_start = if start < 0 {
+                    (len + start).max(0) as usize
+                } else {
+                    start.min(len) as usize
+                };
+
+                // Calculate end position
+                let end_pos = match length {
+                    Some(l) => (actual_start + l as usize).min(chars.len()),
+                    None => chars.len(),
+                };
+
+                chars[actual_start..end_pos].iter().collect::<String>()
+            }))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn string_chr(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        // Support various integer types for ASCII codes
+        if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            let result: arrow_array::StringArray = int_arr.iter()
+                .map(|opt| opt.and_then(|code| {
+                    if code >= 0 && code <= 127 {
+                        Some((code as u8 as char).to_string())
+                    } else {
+                        None // Non-ASCII codes return null
+                    }
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let result: arrow_array::StringArray = int_arr.iter()
+                .map(|opt| opt.and_then(|code| {
+                    if code >= 0 && code <= 127 {
+                        Some((code as u8 as char).to_string())
+                    } else {
+                        None // Non-ASCII codes return null
+                    }
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::UInt8Array>() {
+            let result: arrow_array::StringArray = int_arr.iter()
+                .map(|opt| opt.and_then(|code| {
+                    if code <= 127 {
+                        Some((code as char).to_string())
+                    } else {
+                        None // Non-ASCII codes return null
+                    }
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected integer array for ASCII codes".to_string()))
     }
 
     // ========== Array Generation ==========

@@ -495,6 +495,14 @@ interface compute {
     /// Extract part from split string (1-indexed, like SQL SPLIT_PART)
     string-split-part: func(arr: borrow<array>, delimiter: string, part: u32) -> result<array, arrow-error>;
 
+    /// Substring by character count (not bytes) - handles UTF-8 properly
+    /// Start is 0-indexed, length is optional (if None, returns rest of string)
+    substring-by-char: func(arr: borrow<array>, start: s64, length: option<u64>) -> result<array, arrow-error>;
+
+    /// Character from ASCII code (inverse of string-ascii)
+    /// Returns single character string for each ASCII code
+    string-chr: func(arr: borrow<array>) -> result<array, arrow-error>;
+
     /// ========== Array Generation ==========
 
     /// Create an Int64 array with values from start to end (exclusive) with step
@@ -1090,4 +1098,72 @@ interface compute {
 
     /// Last non-null value
     last-value: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Advanced Aggregations (Phase 10.5) ==========
+
+    /// Checked sum with overflow detection (returns error on overflow)
+    sum-checked-i64: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
+
+    /// Checked sum with overflow detection for 32-bit integers
+    sum-checked-i32: func(arr: borrow<array>) -> result<option<s32>, arrow-error>;
+
+    /// Product of all values (multiply all elements together)
+    product-i64: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
+
+    /// Product of all values (float)
+    product-f64: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Geometric mean (nth root of product of n values)
+    geometric-mean: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Harmonic mean (n / sum of reciprocals)
+    harmonic-mean: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Root mean square (sqrt of mean of squares)
+    rms: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Count distinct values (exact cardinality)
+    count-distinct: func(arr: borrow<array>) -> result<u64, arrow-error>;
+
+    /// Approximate count distinct using hash-based estimation
+    count-distinct-approx: func(arr: borrow<array>) -> result<u64, arrow-error>;
+
+    /// ========== Selection & Merge Operations ==========
+
+    /// Sort multiple arrays together, return first N (lexicographic)
+    lexsort-limit: func(arrays: list<array>, limit: u64, descending: list<bool>, nulls-first: list<bool>) -> result<list<array>, arrow-error>;
+
+    /// Partition data into groups of consecutive equal values
+    /// Returns list of (start_index, length) pairs
+    partition-ranges: func(arr: borrow<array>) -> result<list<tuple<u64, u64>>, arrow-error>;
+
+    /// Merge two sorted arrays into one sorted array
+    merge-sorted: func(left: borrow<array>, right: borrow<array>, descending: bool) -> result<array, arrow-error>;
+
+    /// Combine values from two arrays based on boolean mask
+    /// Where mask is true, take from left; where false, take from right
+    zip-select: func(mask: borrow<array>, left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Interval Arithmetic ==========
+
+    /// Add two interval arrays element-wise (MonthDayNano intervals)
+    interval-add: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Subtract two interval arrays element-wise (MonthDayNano intervals)
+    interval-subtract: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Multiply interval by a scalar factor
+    interval-multiply-scalar: func(arr: borrow<array>, factor: s64) -> result<array, arrow-error>;
+
+    /// Negate interval (reverse direction)
+    interval-negate: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if two interval arrays are equal element-wise
+    interval-eq: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if left interval is less than right element-wise
+    interval-lt: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if left interval is greater than right element-wise
+    interval-gt: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
 }

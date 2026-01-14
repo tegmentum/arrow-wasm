@@ -175,7 +175,13 @@ interface types {
 
         /// Get field index by name
         index-of: func(name: string) -> option<u32>;
+
+        /// Check if schema contains a field with the given name
+        contains-field: func(name: string) -> bool;
     }
+
+    /// Merge multiple schemas into one (union of all fields)
+    schema-merge: func(schemas: list<schema>) -> result<schema, arrow-error>;
 
     /// Error type for Arrow operations
     variant arrow-error {

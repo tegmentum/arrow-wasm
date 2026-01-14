@@ -576,6 +576,26 @@ interface arrays {
     /// Get the values array from a run-end encoded array
     ree-values: func(arr: borrow<array>) -> result<array, arrow-error>;
 
+    /// ========== Binary Data Operations ==========
+
+    /// Get byte at specified index from each binary element (returns Int32 array of byte values)
+    binary-get-byte: func(arr: borrow<array>, index: u64) -> result<array, arrow-error>;
+
+    /// Slice binary data from each element (start can be negative for from-end indexing)
+    binary-slice: func(arr: borrow<array>, start: s64, length: option<u64>) -> result<array, arrow-error>;
+
+    /// Concatenate two binary arrays element-wise
+    binary-concat: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get length of each binary element (returns Int64 array)
+    binary-length: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Convert binary array to hex string array
+    binary-to-hex: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Convert hex string array to binary array
+    hex-to-binary: func(arr: borrow<array>) -> result<array, arrow-error>;
+
     /// ========== Array Generation Utilities ==========
 
     /// Create an array filled with a repeated Int64 value

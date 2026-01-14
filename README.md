@@ -56,11 +56,15 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 
 #### Aggregations
 - sum, min, max, count, mean
+- sum-checked-i64, sum-checked-i32 (overflow detection)
+- product-i64, product-f64 (multiply all elements)
 - variance, stddev (sample and population)
 - median, percentile
+- geometric-mean, harmonic-mean, rms (root mean square)
 - bool-any, bool-all
 - first-value, last-value
 - min-string, max-string, min-binary, max-binary
+- count-distinct, count-distinct-approx (cardinality)
 
 #### Extended Statistics
 - index-of-max, index-of-min (argmax/argmin)
@@ -72,21 +76,31 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 
 #### Selection & Filtering
 - filter, take
-- sort, sort-indices, lexsort
+- sort, sort-indices, lexsort, lexsort-limit
+- sort-limit, sort-indices-limit (top-k operations)
 - limit, skip, shift
 - unique, value-counts
 - List membership (in-list-i64, in-list-string)
+- partition-ranges (group consecutive equal values)
+- merge-sorted (merge two sorted arrays)
+- zip-select (combine arrays based on boolean mask)
+- coalesce (first non-null value from multiple arrays)
 
 #### String Operations
 - string-length, bit-length, string-lower, string-upper, string-trim
 - string-contains, string-starts-with, string-ends-with
-- string-concat, concat-elements, substring
+- string-concat, concat-elements, substring, substring-by-char (UTF-8 safe)
 - SQL LIKE: string-like, string-ilike, string-nlike, string-nilike
 - string-left, string-right (get first/last N characters)
+- string-lpad, string-rpad (pad to length)
+- string-repeat, string-reverse
 - string-initcap (title case)
 - string-position, string-position-from (find substring)
 - string-translate (character translation)
 - string-concat-ws, string-split-part (SQL-style)
+- string-ascii (ASCII code of first character)
+- string-chr (character from ASCII code)
+- string-replace (replace pattern with replacement)
 
 #### Regex Operations
 - regex-match, regex-extract, regex-extract-group
@@ -118,12 +132,17 @@ This project provides a complete implementation of Apache Arrow as a WebAssembly
 #### Interval Operations
 - make-interval-month-day-nano (create interval from parts)
 - interval-months, interval-days, interval-nanos (extract components)
+- interval-add, interval-subtract (element-wise arithmetic)
+- interval-multiply-scalar (scale by factor)
+- interval-negate (reverse direction)
+- interval-eq, interval-lt, interval-gt (comparisons)
 
 #### Window Functions
 - row-number, rank, dense-rank, percent-rank, cume-dist, ntile
-- lead, lag
+- lead, lag (with default value support)
 - first-value, last-value, nth-value
-- Running aggregates: sum, avg, min, max, count
+- Running aggregates: sum, avg, min, max, count (with frame support)
+- Window frame specifications for ROWS BETWEEN semantics
 
 #### Cumulative/Scan Operations
 - cumulative-sum (running total)
@@ -212,6 +231,7 @@ arrow-wasm/
 
 ### types
 Core Arrow type definitions including data types, schema, field, and error types.
+- **Schema operations**: index-of, contains-field, schema-merge
 
 ### arrays
 Array resource with operations for creating, accessing, and manipulating arrays. Includes:
@@ -223,11 +243,15 @@ Array resource with operations for creating, accessing, and manipulating arrays.
 - **Union arrays**: union-type-ids, union-child, union-children
 - **Dictionary arrays**: dictionary-encode, dictionary-decode, dictionary-keys, dictionary-values
 - **Run-End Encoded (REE) arrays**: ree-encode, ree-decode, ree-run-ends, ree-values
+- **Binary data**: binary-get-byte, binary-slice, binary-concat, binary-length, binary-to-hex, hex-to-binary
 - **Builders**: Boolean, Int8-64, UInt8-64, Float32/64, String, Binary, Date32/64, Timestamp, Duration, Time32/64, Decimal128/256, LargeString, LargeBinary, FixedSizeBinary, List, LargeList, Struct, Map
 - **Array generation**: repeat-i64, repeat-f64, repeat-string, repeat-bool, range-i64, range-f64, range-date
 
 ### record-batch
 RecordBatch resource for columnar data with schema.
+- **Batch operations**: project, slice, remove-column, concat-batches
+- **Schema operations**: record-batch-with-schema, record-batch-rename-columns
+- **Validation**: validate-batch, validate-batch-schema
 
 ### compute
 Comprehensive compute kernels for data processing.
