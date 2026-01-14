@@ -9566,7 +9566,6 @@ impl compute::Guest for Component {
             left_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
             right_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
         ) {
-            use arrow_array::Array as _;
             if l.len() != r.len() {
                 return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
             }
@@ -9597,7 +9596,6 @@ impl compute::Guest for Component {
             left_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
             right_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
         ) {
-            use arrow_array::Array as _;
             if l.len() != r.len() {
                 return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
             }
@@ -9665,7 +9663,6 @@ impl compute::Guest for Component {
             left_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
             right_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
         ) {
-            use arrow_array::Array as _;
             if l.len() != r.len() {
                 return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
             }
@@ -9690,7 +9687,6 @@ impl compute::Guest for Component {
             left_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
             right_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
         ) {
-            use arrow_array::Array as _;
             if l.len() != r.len() {
                 return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
             }
@@ -9721,7 +9717,6 @@ impl compute::Guest for Component {
             left_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
             right_impl.inner.as_any().downcast_ref::<arrow_array::IntervalMonthDayNanoArray>(),
         ) {
-            use arrow_array::Array as _;
             if l.len() != r.len() {
                 return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
             }
@@ -11265,7 +11260,6 @@ impl compute::Guest for Component {
     }
 
     fn greatest(input_arrays: Vec<arrays::Array>) -> Result<arrays::Array, compute::ArrowError> {
-        use arrow_array::Array as ArrowArrayTrait;
         use arrow_ord::cmp::gt;
 
         if input_arrays.is_empty() {
@@ -11294,7 +11288,6 @@ impl compute::Guest for Component {
     }
 
     fn least(input_arrays: Vec<arrays::Array>) -> Result<arrays::Array, compute::ArrowError> {
-        use arrow_array::Array as ArrowArrayTrait;
         use arrow_ord::cmp::lt;
 
         if input_arrays.is_empty() {
