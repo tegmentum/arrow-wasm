@@ -618,4 +618,35 @@ interface arrays {
 
     /// Generate a sequence of Date32 values from start to stop (exclusive) with step in days
     range-date: func(start: s32, stop: s32, step: s32) -> result<array, arrow-error>;
+
+    /// ========== View Array Types (Memory-Efficient String/Binary) ==========
+
+    /// Create a StringViewArray from strings (more memory efficient for many small strings)
+    create-string-view-array: func(values: list<option<string>>) -> array;
+
+    /// Create a BinaryViewArray from binary data
+    create-binary-view-array: func(values: list<option<list<u8>>>) -> array;
+
+    /// Convert StringArray to StringViewArray
+    string-to-view: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Convert BinaryArray to BinaryViewArray
+    binary-to-view: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Convert StringViewArray to StringArray
+    view-to-string: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Convert BinaryViewArray to BinaryArray
+    view-to-binary: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if array is a view type (StringView or BinaryView)
+    is-view-type: func(arr: borrow<array>) -> bool;
+
+    /// ========== Pretty Print & Display Utilities ==========
+
+    /// Convert array to human-readable string representation
+    array-to-string: func(arr: borrow<array>, max-rows: option<u32>) -> string;
+
+    /// Format array element at index as string
+    array-value-to-string: func(arr: borrow<array>, index: u64) -> result<option<string>, arrow-error>;
 }

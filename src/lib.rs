@@ -2821,6 +2821,140 @@ impl arrays::Guest for Component {
             inner: Arc::new(arrow_array::Date32Array::from(values)),
         }))
     }
+
+    // ========== View Array Types ==========
+
+    fn create_string_view_array(values: Vec<Option<String>>) -> arrays::Array {
+        let arr: arrow_array::StringViewArray = values.into_iter().collect();
+        arrays::Array::new(ArrayImpl { inner: Arc::new(arr) })
+    }
+
+    fn create_binary_view_array(values: Vec<Option<Vec<u8>>>) -> arrays::Array {
+        let arr: arrow_array::BinaryViewArray = values
+            .into_iter()
+            .map(|opt| opt.map(|v| v.as_slice().to_vec()))
+            .collect();
+        arrays::Array::new(ArrayImpl { inner: Arc::new(arr) })
+    }
+
+    fn string_to_view(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, arrays::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let view_arr: arrow_array::StringViewArray = str_arr.iter().collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(view_arr) }));
+        }
+
+        if let Some(large_str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::LargeStringArray>() {
+            let view_arr: arrow_array::StringViewArray = large_str_arr.iter().collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(view_arr) }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("Array must be String or LargeString type".to_string()))
+    }
+
+    fn binary_to_view(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, arrays::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(bin_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::BinaryArray>() {
+            let view_arr: arrow_array::BinaryViewArray = bin_arr.iter().collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(view_arr) }));
+        }
+
+        if let Some(large_bin_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::LargeBinaryArray>() {
+            let view_arr: arrow_array::BinaryViewArray = large_bin_arr.iter().collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(view_arr) }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("Array must be Binary or LargeBinary type".to_string()))
+    }
+
+    fn view_to_string(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, arrays::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(view_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringViewArray>() {
+            let str_arr: arrow_array::StringArray = view_arr.iter().collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(str_arr) }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("Array must be StringView type".to_string()))
+    }
+
+    fn view_to_binary(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, arrays::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(view_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::BinaryViewArray>() {
+            let bin_arr: arrow_array::BinaryArray = view_arr.iter().collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(bin_arr) }));
+        }
+
+        Err(arrays::ArrowError::InvalidArgument("Array must be BinaryView type".to_string()))
+    }
+
+    fn is_view_type(arr: arrays::ArrayBorrow<'_>) -> bool {
+        let arr_impl = arr.get::<ArrayImpl>();
+        matches!(
+            arr_impl.inner.data_type(),
+            arrow_schema::DataType::Utf8View | arrow_schema::DataType::BinaryView
+        )
+    }
+
+    // ========== Pretty Print & Display Utilities ==========
+
+    fn array_to_string(arr: arrays::ArrayBorrow<'_>, max_rows: Option<u32>) -> String {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let len = arr_impl.inner.len();
+        let limit = max_rows.map(|m| m as usize).unwrap_or(len).min(len);
+
+        let mut result = String::new();
+        result.push_str(&format!("{} [len={}]\n", arr_impl.inner.data_type(), len));
+        result.push('[');
+
+        for i in 0..limit {
+            if i > 0 {
+                result.push_str(", ");
+            }
+            if arr_impl.inner.is_null(i) {
+                result.push_str("null");
+            } else {
+                // Use arrow_cast display for value formatting
+                use arrow_cast::display::ArrayFormatter;
+                if let Ok(formatter) = ArrayFormatter::try_new(arr_impl.inner.as_ref(), &Default::default()) {
+                    result.push_str(&formatter.value(i).to_string());
+                } else {
+                    result.push_str("<unknown>");
+                }
+            }
+        }
+
+        if limit < len {
+            result.push_str(&format!(", ... {} more values", len - limit));
+        }
+        result.push(']');
+        result
+    }
+
+    fn array_value_to_string(arr: arrays::ArrayBorrow<'_>, index: u64) -> Result<Option<String>, arrays::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let idx = index as usize;
+
+        if idx >= arr_impl.inner.len() {
+            return Err(arrays::ArrowError::InvalidArgument(format!(
+                "Index {} out of bounds for array of length {}",
+                index, arr_impl.inner.len()
+            )));
+        }
+
+        if arr_impl.inner.is_null(idx) {
+            return Ok(None);
+        }
+
+        use arrow_cast::display::ArrayFormatter;
+        match ArrayFormatter::try_new(arr_impl.inner.as_ref(), &Default::default()) {
+            Ok(formatter) => Ok(Some(formatter.value(idx).to_string())),
+            Err(e) => Err(arrays::ArrowError::InvalidArgument(format!("Failed to format value: {}", e))),
+        }
+    }
 }
 
 struct ArrayImpl {
@@ -5375,6 +5509,127 @@ impl record_batch::Guest for Component {
 
         Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
     }
+
+    // ========== Pretty Print & Display Utilities ==========
+
+    fn pretty_print_batch(batch: record_batch::RecordBatchBorrow<'_>, max_rows: Option<u32>) -> String {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let schema = batch_impl.inner.schema();
+        let num_rows = batch_impl.inner.num_rows();
+        let num_cols = batch_impl.inner.num_columns();
+        let limit = max_rows.map(|m| m as usize).unwrap_or(num_rows).min(num_rows);
+
+        // Calculate column widths
+        let mut col_widths: Vec<usize> = schema.fields()
+            .iter()
+            .map(|f| f.name().len())
+            .collect();
+
+        // Update widths based on data
+        for row in 0..limit {
+            for (col, width) in col_widths.iter_mut().enumerate() {
+                let arr = batch_impl.inner.column(col);
+                let value_len = if arr.is_null(row) {
+                    4 // "null"
+                } else {
+                    use arrow_cast::display::ArrayFormatter;
+                    if let Ok(formatter) = ArrayFormatter::try_new(arr.as_ref(), &Default::default()) {
+                        formatter.value(row).to_string().len()
+                    } else {
+                        7 // "<error>"
+                    }
+                };
+                *width = (*width).max(value_len);
+            }
+        }
+
+        let mut result = String::new();
+
+        // Header
+        result.push('|');
+        for (field, width) in schema.fields().iter().zip(col_widths.iter()) {
+            result.push_str(&format!(" {:^width$} |", field.name(), width = *width));
+        }
+        result.push('\n');
+
+        // Separator
+        result.push('|');
+        for width in &col_widths {
+            result.push_str(&"-".repeat(*width + 2));
+            result.push('|');
+        }
+        result.push('\n');
+
+        // Data rows
+        for row in 0..limit {
+            result.push('|');
+            for (col, width) in col_widths.iter().enumerate() {
+                let arr = batch_impl.inner.column(col);
+                let value = if arr.is_null(row) {
+                    "null".to_string()
+                } else {
+                    use arrow_cast::display::ArrayFormatter;
+                    if let Ok(formatter) = ArrayFormatter::try_new(arr.as_ref(), &Default::default()) {
+                        formatter.value(row).to_string()
+                    } else {
+                        "<error>".to_string()
+                    }
+                };
+                result.push_str(&format!(" {:>width$} |", value, width = *width));
+            }
+            result.push('\n');
+        }
+
+        if limit < num_rows {
+            result.push_str(&format!("... {} more rows\n", num_rows - limit));
+        }
+
+        result.push_str(&format!("\n{} rows x {} columns", num_rows, num_cols));
+        result
+    }
+
+    fn batch_to_csv_string(batch: record_batch::RecordBatchBorrow<'_>) -> Result<String, types::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let schema = batch_impl.inner.schema();
+        let num_rows = batch_impl.inner.num_rows();
+
+        let mut result = String::new();
+
+        // Header
+        let headers: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        result.push_str(&headers.join(","));
+        result.push('\n');
+
+        // Data rows
+        for row in 0..num_rows {
+            let mut values: Vec<String> = Vec::with_capacity(batch_impl.inner.num_columns());
+            for col in 0..batch_impl.inner.num_columns() {
+                let arr = batch_impl.inner.column(col);
+                let value = if arr.is_null(row) {
+                    String::new()
+                } else {
+                    use arrow_cast::display::ArrayFormatter;
+                    match ArrayFormatter::try_new(arr.as_ref(), &Default::default()) {
+                        Ok(formatter) => {
+                            let val = formatter.value(row).to_string();
+                            // Escape CSV values with commas or quotes
+                            if val.contains(',') || val.contains('"') || val.contains('\n') {
+                                format!("\"{}\"", val.replace('"', "\"\""))
+                            } else {
+                                val
+                            }
+                        }
+                        Err(e) => return Err(types::ArrowError::ComputeError(format!("Failed to format value: {}", e))),
+                    }
+                };
+                values.push(value);
+            }
+            result.push_str(&values.join(","));
+            result.push('\n');
+        }
+
+        Ok(result)
+    }
 }
 
 fn validate_batch_internal(batch: &ArrowRecordBatch, expected_schema: &Arc<arrow_schema::Schema>) -> Vec<record_batch::ValidationError> {
@@ -7285,6 +7540,88 @@ impl compute::Guest for Component {
         Ok(arrow_arith::aggregate::max_binary(bin_arr).map(|b| b.to_vec()))
     }
 
+    fn bool_min(arr: arrays::ArrayBorrow<'_>) -> Result<Option<bool>, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let bool_arr = arr_impl.inner.as_boolean_opt()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected Boolean array".to_string()))?;
+        Ok(arrow_arith::aggregate::min_boolean(bool_arr))
+    }
+
+    fn bool_max(arr: arrays::ArrayBorrow<'_>) -> Result<Option<bool>, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let bool_arr = arr_impl.inner.as_boolean_opt()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected Boolean array".to_string()))?;
+        Ok(arrow_arith::aggregate::max_boolean(bool_arr))
+    }
+
+    fn min_fixed_binary(arr: arrays::ArrayBorrow<'_>) -> Result<Option<Vec<u8>>, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+        if let Some(fixed_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::FixedSizeBinaryArray>() {
+            // Find minimum by comparing bytes
+            let mut min_val: Option<&[u8]> = None;
+            for i in 0..fixed_arr.len() {
+                if !fixed_arr.is_null(i) {
+                    let val = fixed_arr.value(i);
+                    min_val = Some(match min_val {
+                        None => val,
+                        Some(current) => if val < current { val } else { current },
+                    });
+                }
+            }
+            return Ok(min_val.map(|b| b.to_vec()));
+        }
+        Err(compute::ArrowError::InvalidArgument("Expected FixedSizeBinary array".to_string()))
+    }
+
+    fn max_fixed_binary(arr: arrays::ArrayBorrow<'_>) -> Result<Option<Vec<u8>>, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+        if let Some(fixed_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::FixedSizeBinaryArray>() {
+            // Find maximum by comparing bytes
+            let mut max_val: Option<&[u8]> = None;
+            for i in 0..fixed_arr.len() {
+                if !fixed_arr.is_null(i) {
+                    let val = fixed_arr.value(i);
+                    max_val = Some(match max_val {
+                        None => val,
+                        Some(current) => if val > current { val } else { current },
+                    });
+                }
+            }
+            return Ok(max_val.map(|b| b.to_vec()));
+        }
+        Err(compute::ArrowError::InvalidArgument("Expected FixedSizeBinary array".to_string()))
+    }
+
+    fn sum_checked(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        macro_rules! sum_primitive {
+            ($arr_type:ty) => {{
+                if let Some(prim_arr) = arr_impl.inner.as_primitive_opt::<$arr_type>() {
+                    let sum: Option<<$arr_type as arrow_array::types::ArrowPrimitiveType>::Native> = arrow_arith::aggregate::sum(prim_arr);
+                    let result: arrow_array::PrimitiveArray<$arr_type> = sum.into_iter().collect();
+                    return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+                }
+            }};
+        }
+
+        // Try all numeric types - keep same type for output
+        sum_primitive!(arrow_array::types::Int8Type);
+        sum_primitive!(arrow_array::types::Int16Type);
+        sum_primitive!(arrow_array::types::Int32Type);
+        sum_primitive!(arrow_array::types::Int64Type);
+        sum_primitive!(arrow_array::types::UInt8Type);
+        sum_primitive!(arrow_array::types::UInt16Type);
+        sum_primitive!(arrow_array::types::UInt32Type);
+        sum_primitive!(arrow_array::types::UInt64Type);
+        sum_primitive!(arrow_array::types::Float32Type);
+        sum_primitive!(arrow_array::types::Float64Type);
+
+        Err(compute::ArrowError::InvalidArgument("sum_checked requires numeric array".to_string()))
+    }
+
     fn count(arr: arrays::ArrayBorrow<'_>) -> u64 {
         let arr_impl = arr.get::<ArrayImpl>();
         (arr_impl.inner.len() - arr_impl.inner.null_count()) as u64
@@ -8922,6 +9259,73 @@ impl compute::Guest for Component {
                 .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
             return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
         }
+        Err(compute::ArrowError::InvalidArgument("Expected String or Binary array".to_string()))
+    }
+
+    fn b64_encode_with_alphabet(arr: arrays::ArrayBorrow<'_>, alphabet: compute::Base64Alphabet) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let bin_arr = arr_impl.inner.as_any()
+            .downcast_ref::<arrow_array::BinaryArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected Binary array".to_string()))?;
+
+        use base64::Engine;
+        use base64::engine::general_purpose::{STANDARD, URL_SAFE, STANDARD_NO_PAD, URL_SAFE_NO_PAD};
+
+        // Use a macro to avoid dyn trait issues with Engine
+        macro_rules! encode_with_engine {
+            ($engine:expr) => {{
+                let result: arrow_array::StringArray = bin_arr.iter()
+                    .map(|opt| opt.map(|bytes| $engine.encode(bytes)))
+                    .collect();
+                Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+            }};
+        }
+
+        match alphabet {
+            compute::Base64Alphabet::Standard => encode_with_engine!(STANDARD),
+            compute::Base64Alphabet::UrlSafe => encode_with_engine!(URL_SAFE),
+            compute::Base64Alphabet::StandardNoPad => encode_with_engine!(STANDARD_NO_PAD),
+            compute::Base64Alphabet::UrlSafeNoPad => encode_with_engine!(URL_SAFE_NO_PAD),
+        }
+    }
+
+    fn b64_decode_with_alphabet(arr: arrays::ArrayBorrow<'_>, alphabet: compute::Base64Alphabet) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        use base64::Engine;
+        use base64::engine::general_purpose::{STANDARD, URL_SAFE, STANDARD_NO_PAD, URL_SAFE_NO_PAD};
+
+        macro_rules! decode_with_engine {
+            ($engine:expr, $input_arr:expr) => {{
+                let result: Result<arrow_array::BinaryArray, _> = $input_arr.iter()
+                    .map(|opt| {
+                        opt.map(|s| $engine.decode(s))
+                            .transpose()
+                    })
+                    .collect();
+                result.map_err(|e| compute::ArrowError::ComputeError(format!("Base64 decode error: {}", e)))
+                    .map(|r| arrays::Array::new(ArrayImpl { inner: Arc::new(r) }))
+            }};
+        }
+
+        if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            return match alphabet {
+                compute::Base64Alphabet::Standard => decode_with_engine!(STANDARD, str_arr),
+                compute::Base64Alphabet::UrlSafe => decode_with_engine!(URL_SAFE, str_arr),
+                compute::Base64Alphabet::StandardNoPad => decode_with_engine!(STANDARD_NO_PAD, str_arr),
+                compute::Base64Alphabet::UrlSafeNoPad => decode_with_engine!(URL_SAFE_NO_PAD, str_arr),
+            };
+        }
+
+        if let Some(bin_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::BinaryArray>() {
+            return match alphabet {
+                compute::Base64Alphabet::Standard => decode_with_engine!(STANDARD, bin_arr),
+                compute::Base64Alphabet::UrlSafe => decode_with_engine!(URL_SAFE, bin_arr),
+                compute::Base64Alphabet::StandardNoPad => decode_with_engine!(STANDARD_NO_PAD, bin_arr),
+                compute::Base64Alphabet::UrlSafeNoPad => decode_with_engine!(URL_SAFE_NO_PAD, bin_arr),
+            };
+        }
+
         Err(compute::ArrowError::InvalidArgument("Expected String or Binary array".to_string()))
     }
 
@@ -15921,6 +16325,111 @@ fn to_parquet_compression(comp: io::Compression) -> Result<ParquetCompression, i
     }
 }
 
+/// Apply row filters to a record batch
+fn apply_row_filters(batch: &ArrowRecordBatch, filters: &[io::ParquetRowFilter]) -> Result<ArrowRecordBatch, io::ArrowError> {
+    use arrow_array::Array as ArrowArrayTrait;
+
+    if filters.is_empty() || batch.num_rows() == 0 {
+        return Ok(batch.clone());
+    }
+
+    // Build a combined boolean mask from all filters (AND logic)
+    let mut mask: Option<arrow_array::BooleanArray> = None;
+
+    for filter in filters {
+        let column = batch.column_by_name(&filter.column)
+            .ok_or_else(|| io::ArrowError::InvalidArgument(format!("Column '{}' not found", filter.column)))?;
+
+        let filter_mask = apply_single_filter(column, &filter.op, &filter.value)?;
+
+        mask = match mask {
+            None => Some(filter_mask),
+            Some(existing) => {
+                // AND the masks together
+                let combined = arrow_arith::boolean::and(&existing, &filter_mask)
+                    .map_err(|e| io::ArrowError::ComputeError(e.to_string()))?;
+                Some(combined)
+            }
+        };
+    }
+
+    // Apply the combined mask
+    if let Some(m) = mask {
+        let filtered = arrow_select::filter::filter_record_batch(batch, &m)
+            .map_err(|e| io::ArrowError::ComputeError(e.to_string()))?;
+        Ok(filtered)
+    } else {
+        Ok(batch.clone())
+    }
+}
+
+/// Apply a single filter to a column
+fn apply_single_filter(column: &ArrayRef, op: &io::ParquetFilterOp, value: &str) -> Result<arrow_array::BooleanArray, io::ArrowError> {
+    use arrow_array::Array as ArrowArrayTrait;
+    use arrow_ord::cmp;
+
+    // Helper macro for numeric comparisons
+    macro_rules! compare_numeric {
+        ($arr_type:ty, $parse_type:ty, $column:expr, $op:expr, $value:expr) => {{
+            if let Some(arr) = $column.as_any().downcast_ref::<$arr_type>() {
+                let scalar: $parse_type = $value.parse()
+                    .map_err(|_| io::ArrowError::InvalidArgument(format!("Cannot parse '{}' as number", $value)))?;
+                let scalar_arr: $arr_type = vec![Some(scalar); arr.len()].into_iter().collect();
+                let result = match $op {
+                    io::ParquetFilterOp::Eq => cmp::eq(arr, &scalar_arr),
+                    io::ParquetFilterOp::NotEq => cmp::neq(arr, &scalar_arr),
+                    io::ParquetFilterOp::Lt => cmp::lt(arr, &scalar_arr),
+                    io::ParquetFilterOp::LtEq => cmp::lt_eq(arr, &scalar_arr),
+                    io::ParquetFilterOp::Gt => cmp::gt(arr, &scalar_arr),
+                    io::ParquetFilterOp::GtEq => cmp::gt_eq(arr, &scalar_arr),
+                };
+                return result.map_err(|e| io::ArrowError::ComputeError(e.to_string()));
+            }
+        }};
+    }
+
+    // Try numeric types
+    compare_numeric!(arrow_array::Int64Array, i64, column, op, value);
+    compare_numeric!(arrow_array::Int32Array, i32, column, op, value);
+    compare_numeric!(arrow_array::Int16Array, i16, column, op, value);
+    compare_numeric!(arrow_array::Int8Array, i8, column, op, value);
+    compare_numeric!(arrow_array::UInt64Array, u64, column, op, value);
+    compare_numeric!(arrow_array::UInt32Array, u32, column, op, value);
+    compare_numeric!(arrow_array::UInt16Array, u16, column, op, value);
+    compare_numeric!(arrow_array::UInt8Array, u8, column, op, value);
+    compare_numeric!(arrow_array::Float64Array, f64, column, op, value);
+    compare_numeric!(arrow_array::Float32Array, f32, column, op, value);
+
+    // String comparison
+    if let Some(arr) = column.as_any().downcast_ref::<arrow_array::StringArray>() {
+        let scalar_arr: arrow_array::StringArray = vec![Some(value); arr.len()].into_iter().collect();
+        let result = match op {
+            io::ParquetFilterOp::Eq => cmp::eq(arr, &scalar_arr),
+            io::ParquetFilterOp::NotEq => cmp::neq(arr, &scalar_arr),
+            io::ParquetFilterOp::Lt => cmp::lt(arr, &scalar_arr),
+            io::ParquetFilterOp::LtEq => cmp::lt_eq(arr, &scalar_arr),
+            io::ParquetFilterOp::Gt => cmp::gt(arr, &scalar_arr),
+            io::ParquetFilterOp::GtEq => cmp::gt_eq(arr, &scalar_arr),
+        };
+        return result.map_err(|e| io::ArrowError::ComputeError(e.to_string()));
+    }
+
+    // Boolean comparison
+    if let Some(arr) = column.as_any().downcast_ref::<arrow_array::BooleanArray>() {
+        let scalar: bool = value.parse()
+            .map_err(|_| io::ArrowError::InvalidArgument(format!("Cannot parse '{}' as boolean", value)))?;
+        let scalar_arr: arrow_array::BooleanArray = vec![Some(scalar); arr.len()].into_iter().collect();
+        let result = match op {
+            io::ParquetFilterOp::Eq => cmp::eq(arr, &scalar_arr),
+            io::ParquetFilterOp::NotEq => cmp::neq(arr, &scalar_arr),
+            _ => return Err(io::ArrowError::InvalidArgument("Boolean only supports eq/not-eq".to_string())),
+        };
+        return result.map_err(|e| io::ArrowError::ComputeError(e.to_string()));
+    }
+
+    Err(io::ArrowError::InvalidArgument(format!("Unsupported column type for filtering: {:?}", column.data_type())))
+}
+
 impl io::Guest for Component {
     type BatchReader = BatchReaderImpl;
 
@@ -16139,6 +16648,54 @@ impl io::Guest for Component {
             .collect())
     }
 
+    fn parquet_read_advanced(data: Vec<u8>, options: io::ParquetReadOptions) -> Result<Vec<record_batch::RecordBatch>, io::ArrowError> {
+        let bytes = Bytes::from(data);
+        let mut builder = ParquetRecordBatchReaderBuilder::try_new(bytes).map_err(to_io_error)?;
+
+        let schema = builder.schema().clone();
+        let parquet_schema = builder.parquet_schema().clone();
+
+        // Apply column projection
+        if !options.projection.is_empty() {
+            let indices: Vec<usize> = options.projection
+                .iter()
+                .filter_map(|name| schema.index_of(name).ok())
+                .collect();
+            builder = builder.with_projection(parquet::arrow::ProjectionMask::leaves(
+                &parquet_schema,
+                indices,
+            ));
+        }
+
+        // Apply row group selection
+        if !options.row_groups.is_empty() {
+            builder = builder.with_row_groups(
+                options.row_groups.into_iter().map(|i| i as usize).collect()
+            );
+        }
+
+        // Apply batch size
+        if let Some(batch_size) = options.batch_size {
+            builder = builder.with_batch_size(batch_size as usize);
+        }
+
+        let reader = builder.build().map_err(to_io_error)?;
+        let mut batches: Vec<ArrowRecordBatch> = reader.collect::<Result<Vec<_>, _>>().map_err(to_io_error)?;
+
+        // Apply row filters post-read (predicate pushdown at row level)
+        // This filters rows after reading but before returning
+        if !options.filters.is_empty() {
+            batches = batches.into_iter()
+                .map(|batch| apply_row_filters(&batch, &options.filters))
+                .collect::<Result<Vec<_>, _>>()?;
+        }
+
+        Ok(batches
+            .into_iter()
+            .map(|b| record_batch::RecordBatch::new(RecordBatchImpl { inner: b }))
+            .collect())
+    }
+
     fn parquet_write(batches: Vec<record_batch::RecordBatch>, options: Option<io::ParquetWriteOptions>) -> Result<Vec<u8>, io::ArrowError> {
         if batches.is_empty() {
             return Err(io::ArrowError::InvalidArgument("No batches to write".to_string()));
@@ -16179,6 +16736,375 @@ impl io::Guest for Component {
             writer.close().map_err(to_io_error)?;
         }
         Ok(buffer)
+    }
+
+    fn parquet_write_extended(
+        batches: Vec<record_batch::RecordBatchBorrow<'_>>,
+        options: io::ParquetWriteOptionsExtended,
+    ) -> Result<Vec<u8>, io::ArrowError> {
+        if batches.is_empty() {
+            return Err(io::ArrowError::InvalidArgument("No batches to write".to_string()));
+        }
+
+        let first_batch = batches[0].get::<RecordBatchImpl>();
+        let schema = first_batch.inner.schema();
+
+        let mut props_builder = WriterProperties::builder();
+
+        // Apply compression
+        props_builder = props_builder.set_compression(to_parquet_compression(options.compression)?);
+
+        // Apply global options
+        if let Some(page_size) = options.data_page_size {
+            props_builder = props_builder.set_data_page_size_limit(page_size as usize);
+        }
+        if let Some(dict_page_size) = options.dictionary_page_size {
+            props_builder = props_builder.set_dictionary_page_size_limit(dict_page_size as usize);
+        }
+        if let Some(row_group_size) = options.row_group_size {
+            props_builder = props_builder.set_max_row_group_size(row_group_size as usize);
+        }
+        if let Some(max_rows) = options.max_row_group_rows {
+            props_builder = props_builder.set_max_row_group_size(max_rows as usize);
+        }
+        if let Some(write_stats) = options.write_statistics {
+            if write_stats {
+                props_builder = props_builder.set_statistics_enabled(
+                    parquet::file::properties::EnabledStatistics::Chunk,
+                );
+            }
+        }
+        if let Some(created_by) = options.created_by {
+            props_builder = props_builder.set_created_by(created_by);
+        }
+
+        // Apply key-value metadata
+        if !options.key_value_metadata.is_empty() {
+            let kv_metadata: Vec<parquet::file::metadata::KeyValue> = options.key_value_metadata
+                .into_iter()
+                .map(|(key, value)| parquet::file::metadata::KeyValue::new(key, value))
+                .collect();
+            props_builder = props_builder.set_key_value_metadata(Some(kv_metadata));
+        }
+
+        // Apply per-column options
+        for col_opts in options.column_options {
+            let col_path = parquet::schema::types::ColumnPath::from(col_opts.column.clone());
+
+            if let Some(encoding) = col_opts.encoding {
+                let parquet_encoding = match encoding {
+                    io::ParquetEncoding::Plain => parquet::basic::Encoding::PLAIN,
+                    io::ParquetEncoding::PlainDictionary => parquet::basic::Encoding::PLAIN_DICTIONARY,
+                    io::ParquetEncoding::Rle => parquet::basic::Encoding::RLE,
+                    io::ParquetEncoding::RleDictionary => parquet::basic::Encoding::RLE_DICTIONARY,
+                    io::ParquetEncoding::DeltaBinaryPacked => parquet::basic::Encoding::DELTA_BINARY_PACKED,
+                    io::ParquetEncoding::DeltaLengthByteArray => parquet::basic::Encoding::DELTA_LENGTH_BYTE_ARRAY,
+                    io::ParquetEncoding::DeltaByteArray => parquet::basic::Encoding::DELTA_BYTE_ARRAY,
+                    io::ParquetEncoding::ByteStreamSplit => parquet::basic::Encoding::BYTE_STREAM_SPLIT,
+                };
+                props_builder = props_builder.set_column_encoding(col_path.clone(), parquet_encoding);
+            }
+
+            if let Some(dict_enabled) = col_opts.dictionary_enabled {
+                props_builder = props_builder.set_column_dictionary_enabled(col_path.clone(), dict_enabled);
+            }
+
+            if let Some(bloom_enabled) = col_opts.bloom_filter_enabled {
+                if bloom_enabled {
+                    let mut bloom_props = parquet::file::properties::BloomFilterProperties::default();
+                    if let Some(fpp) = col_opts.bloom_filter_fpp {
+                        bloom_props.fpp = fpp;
+                    }
+                    if let Some(ndv) = col_opts.bloom_filter_ndv {
+                        bloom_props.ndv = ndv;
+                    }
+                    props_builder = props_builder.set_column_bloom_filter_enabled(col_path.clone(), true);
+                    props_builder = props_builder.set_column_bloom_filter_fpp(col_path.clone(), bloom_props.fpp);
+                    props_builder = props_builder.set_column_bloom_filter_ndv(col_path, bloom_props.ndv);
+                }
+            }
+        }
+
+        let props = props_builder.build();
+        let mut buffer = Vec::new();
+        {
+            let mut writer = ParquetArrowWriter::try_new(&mut buffer, schema, Some(props))
+                .map_err(to_io_error)?;
+            for batch in &batches {
+                let batch_impl = batch.get::<RecordBatchImpl>();
+                writer.write(&batch_impl.inner).map_err(to_io_error)?;
+            }
+            writer.close().map_err(to_io_error)?;
+        }
+        Ok(buffer)
+    }
+
+    // ========== Parquet Bloom Filter Operations ==========
+
+    fn parquet_has_bloom_filter(data: Vec<u8>, row_group: u32, column: String) -> Result<bool, io::ArrowError> {
+        use parquet::file::reader::FileReader;
+        use parquet::file::serialized_reader::SerializedFileReader;
+
+        let bytes = Bytes::from(data);
+        let reader = SerializedFileReader::new(bytes).map_err(to_io_error)?;
+        let metadata = reader.metadata();
+
+        if row_group as usize >= metadata.num_row_groups() {
+            return Err(io::ArrowError::InvalidArgument(format!(
+                "Row group {} out of range (file has {} row groups)",
+                row_group, metadata.num_row_groups()
+            )));
+        }
+
+        let rg_metadata = metadata.row_group(row_group as usize);
+
+        // Find column index
+        let schema_descr = metadata.file_metadata().schema_descr();
+        let col_idx = (0..rg_metadata.num_columns())
+            .find(|&i| {
+                let col_descr = rg_metadata.column(i);
+                col_descr.column_path().string() == column
+            });
+
+        match col_idx {
+            Some(idx) => {
+                let col_chunk = rg_metadata.column(idx);
+                Ok(col_chunk.bloom_filter_offset().is_some())
+            }
+            None => Err(io::ArrowError::InvalidArgument(format!("Column '{}' not found", column))),
+        }
+    }
+
+    fn parquet_bloom_check_i64(data: Vec<u8>, row_group: u32, column: String, value: i64) -> Result<bool, io::ArrowError> {
+        use parquet::file::reader::FileReader;
+        use parquet::file::serialized_reader::SerializedFileReader;
+        use parquet::bloom_filter::Sbbf;
+
+        let bytes = Bytes::from(data);
+        let reader = SerializedFileReader::new(bytes).map_err(to_io_error)?;
+
+        let rg_reader = reader.get_row_group(row_group as usize).map_err(to_io_error)?;
+
+        // Find column index
+        let metadata = reader.metadata();
+        let rg_metadata = metadata.row_group(row_group as usize);
+
+        let col_idx = (0..rg_metadata.num_columns())
+            .find(|&i| rg_metadata.column(i).column_path().string() == column);
+
+        match col_idx {
+            Some(idx) => {
+                match rg_reader.get_column_bloom_filter(idx) {
+                    Some(bloom) => Ok(bloom.check(&value)),
+                    None => Err(io::ArrowError::InvalidArgument(format!(
+                        "No bloom filter for column '{}' in row group {}", column, row_group
+                    ))),
+                }
+            }
+            None => Err(io::ArrowError::InvalidArgument(format!("Column '{}' not found", column))),
+        }
+    }
+
+    fn parquet_bloom_check_string(data: Vec<u8>, row_group: u32, column: String, value: String) -> Result<bool, io::ArrowError> {
+        use parquet::file::reader::FileReader;
+        use parquet::file::serialized_reader::SerializedFileReader;
+
+        let bytes = Bytes::from(data);
+        let reader = SerializedFileReader::new(bytes).map_err(to_io_error)?;
+
+        let rg_reader = reader.get_row_group(row_group as usize).map_err(to_io_error)?;
+
+        // Find column index
+        let metadata = reader.metadata();
+        let rg_metadata = metadata.row_group(row_group as usize);
+
+        let col_idx = (0..rg_metadata.num_columns())
+            .find(|&i| rg_metadata.column(i).column_path().string() == column);
+
+        match col_idx {
+            Some(idx) => {
+                match rg_reader.get_column_bloom_filter(idx) {
+                    Some(bloom) => Ok(bloom.check(&parquet::data_type::ByteArray::from(value.as_bytes()))),
+                    None => Err(io::ArrowError::InvalidArgument(format!(
+                        "No bloom filter for column '{}' in row group {}", column, row_group
+                    ))),
+                }
+            }
+            None => Err(io::ArrowError::InvalidArgument(format!("Column '{}' not found", column))),
+        }
+    }
+
+    fn parquet_bloom_check_binary(data: Vec<u8>, row_group: u32, column: String, value: Vec<u8>) -> Result<bool, io::ArrowError> {
+        use parquet::file::reader::FileReader;
+        use parquet::file::serialized_reader::SerializedFileReader;
+
+        let bytes = Bytes::from(data);
+        let reader = SerializedFileReader::new(bytes).map_err(to_io_error)?;
+
+        let rg_reader = reader.get_row_group(row_group as usize).map_err(to_io_error)?;
+
+        // Find column index
+        let metadata = reader.metadata();
+        let rg_metadata = metadata.row_group(row_group as usize);
+
+        let col_idx = (0..rg_metadata.num_columns())
+            .find(|&i| rg_metadata.column(i).column_path().string() == column);
+
+        match col_idx {
+            Some(idx) => {
+                match rg_reader.get_column_bloom_filter(idx) {
+                    Some(bloom) => Ok(bloom.check(&parquet::data_type::ByteArray::from(value))),
+                    None => Err(io::ArrowError::InvalidArgument(format!(
+                        "No bloom filter for column '{}' in row group {}", column, row_group
+                    ))),
+                }
+            }
+            None => Err(io::ArrowError::InvalidArgument(format!("Column '{}' not found", column))),
+        }
+    }
+
+    // ========== Parquet Page Index Access ==========
+
+    fn parquet_has_page_index(data: Vec<u8>) -> Result<bool, io::ArrowError> {
+        use parquet::file::reader::FileReader;
+        use parquet::file::serialized_reader::SerializedFileReader;
+
+        let bytes = Bytes::from(data);
+        let reader = SerializedFileReader::new(bytes).map_err(to_io_error)?;
+        let metadata = reader.metadata();
+
+        // Check if any row group has offset index
+        for rg_idx in 0..metadata.num_row_groups() {
+            if let Some(offset_index) = metadata.offset_index() {
+                if rg_idx < offset_index.len() && !offset_index[rg_idx].is_empty() {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn parquet_page_locations(
+        data: Vec<u8>,
+        row_group: u32,
+        column: String,
+    ) -> Result<Vec<io::ParquetPageLocation>, io::ArrowError> {
+        use parquet::file::reader::FileReader;
+        use parquet::file::serialized_reader::SerializedFileReader;
+
+        let bytes = Bytes::from(data);
+        let reader = SerializedFileReader::new(bytes).map_err(to_io_error)?;
+        let metadata = reader.metadata();
+
+        let rg_idx = row_group as usize;
+        if rg_idx >= metadata.num_row_groups() {
+            return Err(io::ArrowError::InvalidArgument(format!(
+                "Row group {} out of range (file has {} row groups)",
+                row_group, metadata.num_row_groups()
+            )));
+        }
+
+        // Find column index
+        let rg_metadata = metadata.row_group(rg_idx);
+        let col_idx = (0..rg_metadata.num_columns())
+            .find(|&i| rg_metadata.column(i).column_path().string() == column);
+
+        let col_idx = col_idx.ok_or_else(|| {
+            io::ArrowError::InvalidArgument(format!("Column '{}' not found", column))
+        })?;
+
+        // Get offset index (page locations)
+        let offset_index = metadata.offset_index().ok_or_else(|| {
+            io::ArrowError::InvalidArgument("File does not have page index".to_string())
+        })?;
+
+        if rg_idx >= offset_index.len() {
+            return Err(io::ArrowError::InvalidArgument("Offset index not available for row group".to_string()));
+        }
+
+        if col_idx >= offset_index[rg_idx].len() {
+            return Err(io::ArrowError::InvalidArgument("Offset index not available for column".to_string()));
+        }
+
+        let page_locations: Vec<io::ParquetPageLocation> = offset_index[rg_idx][col_idx]
+            .page_locations
+            .iter()
+            .map(|loc| io::ParquetPageLocation {
+                offset: loc.offset,
+                compressed_size: loc.compressed_page_size as u32,
+                first_row_index: loc.first_row_index,
+            })
+            .collect();
+
+        Ok(page_locations)
+    }
+
+    fn parquet_get_page_stats(
+        data: Vec<u8>,
+        row_group: u32,
+        column: String,
+    ) -> Result<Option<io::ParquetPageStats>, io::ArrowError> {
+        use parquet::file::reader::FileReader;
+        use parquet::file::serialized_reader::SerializedFileReader;
+
+        let bytes = Bytes::from(data);
+        let reader = SerializedFileReader::new(bytes).map_err(to_io_error)?;
+        let metadata = reader.metadata();
+
+        let rg_idx = row_group as usize;
+        if rg_idx >= metadata.num_row_groups() {
+            return Err(io::ArrowError::InvalidArgument(format!(
+                "Row group {} out of range (file has {} row groups)",
+                row_group, metadata.num_row_groups()
+            )));
+        }
+
+        // Find column index
+        let rg_metadata = metadata.row_group(rg_idx);
+        let col_idx = (0..rg_metadata.num_columns())
+            .find(|&i| rg_metadata.column(i).column_path().string() == column);
+
+        let col_idx = col_idx.ok_or_else(|| {
+            io::ArrowError::InvalidArgument(format!("Column '{}' not found", column))
+        })?;
+
+        // Get column index (page statistics)
+        let column_index = match metadata.column_index() {
+            Some(ci) => ci,
+            None => return Ok(None),
+        };
+
+        if rg_idx >= column_index.len() {
+            return Ok(None);
+        }
+
+        if col_idx >= column_index[rg_idx].len() {
+            return Ok(None);
+        }
+
+        let col_index = &column_index[rg_idx][col_idx];
+
+        // Extract null counts which are available directly
+        let null_counts: Vec<Option<i64>> = match col_index.null_counts() {
+            Some(counts) => counts.iter().map(|&c| Some(c)).collect(),
+            None => return Ok(None),
+        };
+
+        if null_counts.is_empty() {
+            return Ok(None);
+        }
+
+        // Min/max values require more complex type handling
+        // For now, we return empty vectors for min/max but provide null counts
+        let num_pages = null_counts.len();
+        let min_values: Vec<Option<String>> = vec![None; num_pages];
+        let max_values: Vec<Option<String>> = vec![None; num_pages];
+
+        Ok(Some(io::ParquetPageStats {
+            min_values,
+            max_values,
+            null_counts,
+        }))
     }
 
     // ========== CSV Operations ==========

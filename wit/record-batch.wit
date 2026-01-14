@@ -147,4 +147,12 @@ interface record-batch {
         arrays: list<array>,
         labels: list<string>
     ) -> result<record-batch, arrow-error>;
+
+    /// ========== Pretty Print & Display Utilities ==========
+
+    /// Pretty print record batch as formatted table
+    pretty-print-batch: func(batch: borrow<record-batch>, max-rows: option<u32>) -> string;
+
+    /// Get batch as CSV-like string
+    batch-to-csv-string: func(batch: borrow<record-batch>) -> result<string, arrow-error>;
 }

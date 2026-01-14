@@ -357,6 +357,21 @@ interface compute {
     /// Maximum binary value
     max-binary: func(arr: borrow<array>) -> result<option<list<u8>>, arrow-error>;
 
+    /// Minimum boolean value (false < true)
+    bool-min: func(arr: borrow<array>) -> result<option<bool>, arrow-error>;
+
+    /// Maximum boolean value (false < true)
+    bool-max: func(arr: borrow<array>) -> result<option<bool>, arrow-error>;
+
+    /// Minimum fixed-size binary value
+    min-fixed-binary: func(arr: borrow<array>) -> result<option<list<u8>>, arrow-error>;
+
+    /// Maximum fixed-size binary value
+    max-fixed-binary: func(arr: borrow<array>) -> result<option<list<u8>>, arrow-error>;
+
+    /// Sum with checked overflow (returns single-element array with appropriate type)
+    sum-checked: func(arr: borrow<array>) -> result<array, arrow-error>;
+
     /// Count non-null values
     count: func(arr: borrow<array>) -> u64;
 
@@ -1070,6 +1085,24 @@ interface compute {
 
     /// Decode base64 string array to binary
     b64-decode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Base64 alphabet variants
+    enum base64-alphabet {
+        /// Standard alphabet (RFC 4648)
+        standard,
+        /// URL-safe alphabet (RFC 4648 section 5)
+        url-safe,
+        /// Standard with no padding
+        standard-no-pad,
+        /// URL-safe with no padding
+        url-safe-no-pad,
+    }
+
+    /// Encode binary to base64 with alphabet choice
+    b64-encode-with-alphabet: func(arr: borrow<array>, alphabet: base64-alphabet) -> result<array, arrow-error>;
+
+    /// Decode base64 string with alphabet choice
+    b64-decode-with-alphabet: func(arr: borrow<array>, alphabet: base64-alphabet) -> result<array, arrow-error>;
 
     /// ========== Window Functions ==========
 

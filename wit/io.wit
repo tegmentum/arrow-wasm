@@ -172,6 +172,170 @@ interface io {
     /// Get statistics for a specific column in a row group
     parquet-get-column-statistics: func(data: list<u8>, row-group: u32, column: u32) -> result<parquet-column-statistics, arrow-error>;
 
+    /// ========== Advanced Parquet Read Options ==========
+
+    /// Comparison operator for row filters
+    enum parquet-filter-op {
+        /// Equal
+        eq,
+        /// Not equal
+        not-eq,
+        /// Less than
+        lt,
+        /// Less than or equal
+        lt-eq,
+        /// Greater than
+        gt,
+        /// Greater than or equal
+        gt-eq,
+    }
+
+    /// Row filter for predicate pushdown (single column filter)
+    record parquet-row-filter {
+        /// Column name to filter on
+        column: string,
+        /// Filter operation
+        op: parquet-filter-op,
+        /// Value to compare (as string, will be parsed to column type)
+        value: string,
+    }
+
+    /// Advanced Parquet read options with predicate pushdown
+    record parquet-read-options {
+        /// Columns to read (empty = all columns)
+        projection: list<string>,
+        /// Row filters for predicate pushdown (ANDed together)
+        filters: list<parquet-row-filter>,
+        /// Row groups to read (empty = all row groups)
+        row-groups: list<u32>,
+        /// Batch size for reading
+        batch-size: option<u64>,
+    }
+
+    /// Read Parquet with advanced options (predicate pushdown, projection, etc.)
+    parquet-read-advanced: func(data: list<u8>, options: parquet-read-options) -> result<list<record-batch>, arrow-error>;
+
+    /// ========== Advanced Parquet Write Options ==========
+
+    /// Parquet encoding types
+    enum parquet-encoding {
+        /// Plain encoding (default)
+        plain,
+        /// Plain dictionary encoding
+        plain-dictionary,
+        /// Run-length encoding
+        rle,
+        /// RLE dictionary encoding
+        rle-dictionary,
+        /// Delta binary packed (for integers)
+        delta-binary-packed,
+        /// Delta length byte array (for strings)
+        delta-length-byte-array,
+        /// Delta byte array
+        delta-byte-array,
+        /// Byte stream split (for floats)
+        byte-stream-split,
+    }
+
+    /// Column-specific write options
+    record parquet-column-options {
+        /// Column name (or path for nested columns like "struct.field")
+        column: string,
+        /// Encoding to use for this column
+        encoding: option<parquet-encoding>,
+        /// Enable dictionary encoding for this column
+        dictionary-enabled: option<bool>,
+        /// Enable bloom filter for this column
+        bloom-filter-enabled: option<bool>,
+        /// Bloom filter false positive probability (0.0-1.0, default 0.05)
+        bloom-filter-fpp: option<f64>,
+        /// Bloom filter expected number of distinct values (hint for sizing)
+        bloom-filter-ndv: option<u64>,
+    }
+
+    /// Extended Parquet write options with per-column control
+    record parquet-write-options-extended {
+        /// Compression codec
+        compression: compression,
+        /// Compression level (0-9)
+        compression-level: option<compression-level>,
+        /// Data page size in bytes
+        data-page-size: option<u64>,
+        /// Dictionary page size in bytes
+        dictionary-page-size: option<u64>,
+        /// Row group size in bytes
+        row-group-size: option<u64>,
+        /// Maximum rows per row group
+        max-row-group-rows: option<u64>,
+        /// Enable statistics globally
+        write-statistics: option<bool>,
+        /// Column-specific options
+        column-options: list<parquet-column-options>,
+        /// Key-value metadata to include in file
+        key-value-metadata: list<tuple<string, string>>,
+        /// "Created by" string
+        created-by: option<string>,
+    }
+
+    /// Write Parquet with extended options (per-column encoding, bloom filters, etc.)
+    parquet-write-extended: func(
+        batches: list<borrow<record-batch>>,
+        options: parquet-write-options-extended
+    ) -> result<list<u8>, arrow-error>;
+
+    /// ========== Parquet Bloom Filter Operations ==========
+
+    /// Check if a Parquet file has a bloom filter for a column
+    parquet-has-bloom-filter: func(data: list<u8>, row-group: u32, column: string) -> result<bool, arrow-error>;
+
+    /// Query bloom filter for i64 value existence (may have false positives, no false negatives)
+    parquet-bloom-check-i64: func(data: list<u8>, row-group: u32, column: string, value: s64) -> result<bool, arrow-error>;
+
+    /// Query bloom filter for string value existence
+    parquet-bloom-check-string: func(data: list<u8>, row-group: u32, column: string, value: string) -> result<bool, arrow-error>;
+
+    /// Query bloom filter for binary value existence
+    parquet-bloom-check-binary: func(data: list<u8>, row-group: u32, column: string, value: list<u8>) -> result<bool, arrow-error>;
+
+    /// ========== Parquet Page Index Access ==========
+
+    /// Page location information
+    record parquet-page-location {
+        /// Offset in file
+        offset: s64,
+        /// Compressed page size
+        compressed-size: u32,
+        /// First row index in page
+        first-row-index: s64,
+    }
+
+    /// Page index statistics
+    record parquet-page-stats {
+        /// Min values per page (as strings)
+        min-values: list<option<string>>,
+        /// Max values per page (as strings)
+        max-values: list<option<string>>,
+        /// Null counts per page
+        null-counts: list<option<s64>>,
+    }
+
+    /// Check if file has page index
+    parquet-has-page-index: func(data: list<u8>) -> result<bool, arrow-error>;
+
+    /// Get page locations for a column in a row group
+    parquet-page-locations: func(
+        data: list<u8>,
+        row-group: u32,
+        column: string
+    ) -> result<list<parquet-page-location>, arrow-error>;
+
+    /// Get page-level statistics for a column
+    parquet-get-page-stats: func(
+        data: list<u8>,
+        row-group: u32,
+        column: string
+    ) -> result<option<parquet-page-stats>, arrow-error>;
+
     /// CSV Format I/O
 
     /// Infer schema from CSV data
