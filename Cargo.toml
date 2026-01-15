@@ -51,6 +51,9 @@ regex = "1.10"
 # Numeric traits for gcd/lcm
 num-traits = "0.2"
 
+# Unicode normalization (pure Rust)
+unicode-normalization = "0.1"
+
 # Component model bindings (compatible with Wasmtime 40.x)
 wit-bindgen = "0.51"
 wit-bindgen-rt = "0.44"

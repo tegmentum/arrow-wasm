@@ -66,6 +66,26 @@ interface compute {
     /// Negate an array with wrapping on overflow (integers only)
     negate-wrapping: func(arr: borrow<array>) -> result<array, arrow-error>;
 
+    /// ========== Saturation Arithmetic (clamp on overflow) ==========
+
+    /// Add two arrays with saturation (clamp to min/max on overflow)
+    add-saturating: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Subtract two arrays with saturation
+    sub-saturating: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Multiply two arrays with saturation
+    mul-saturating: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Add a scalar with saturation
+    add-scalar-saturating: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
+
+    /// Subtract a scalar with saturation
+    sub-scalar-saturating: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
+
+    /// Multiply by scalar with saturation
+    mul-scalar-saturating: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
+
     /// Add a scalar to an array
     add-scalar-i64: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
 
@@ -415,6 +435,29 @@ interface compute {
     /// Get sort indices for an array, limited to first n (top-k indices)
     sort-indices-limit: func(arr: borrow<array>, options: sort-options, limit: u64) -> result<array, arrow-error>;
 
+    /// ========== Advanced Sorting Operations ==========
+
+    /// Stable sort - preserves relative order of equal elements
+    sort-stable: func(arr: borrow<array>, descending: bool) -> result<array, arrow-error>;
+
+    /// Stable sort to indices - preserves relative order of equal elements
+    sort-to-indices-stable: func(arr: borrow<array>, descending: bool) -> result<array, arrow-error>;
+
+    /// Lexicographic stable sort for multiple columns
+    lexsort-stable: func(columns: list<borrow<array>>, descending: list<bool>) -> result<array, arrow-error>;
+
+    /// Find nth smallest element efficiently (quickselect algorithm) - O(n) average
+    /// Returns single-element array with the nth smallest value
+    nth-element: func(arr: borrow<array>, n: u64) -> result<array, arrow-error>;
+
+    /// Partition array around nth element
+    /// Returns (elements < nth, nth element, elements >= nth)
+    partition-nth: func(arr: borrow<array>, n: u64) -> result<tuple<array, array, array>, arrow-error>;
+
+    /// Top-K with partial sort optimization
+    /// More efficient than full sort when k << n
+    top-k-by: func(arr: borrow<array>, k: u64, descending: bool) -> result<array, arrow-error>;
+
     /// Limit/offset operations
 
     /// Get the first n elements
@@ -559,6 +602,52 @@ interface compute {
     /// Returns single character string for each ASCII code
     string-chr: func(arr: borrow<array>) -> result<array, arrow-error>;
 
+    /// ========== Unicode Normalization & Case Conversion ==========
+
+    /// Unicode normalization forms
+    enum unicode-normalization {
+        /// Canonical decomposition (NFD)
+        nfd,
+        /// Canonical decomposition followed by canonical composition (NFC)
+        nfc,
+        /// Compatibility decomposition (NFKD)
+        nfkd,
+        /// Compatibility decomposition followed by canonical composition (NFKC)
+        nfkc,
+    }
+
+    /// Normalize Unicode strings to specified form
+    unicode-normalize: func(arr: borrow<array>, form: unicode-normalization) -> result<array, arrow-error>;
+
+    /// Check if strings are in normalized form
+    is-normalized: func(arr: borrow<array>, form: unicode-normalization) -> result<array, arrow-error>;
+
+    /// Remove diacritics/accents from strings (e.g., "café" -> "cafe")
+    remove-diacritics: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Case conversion styles
+    enum case-style {
+        /// lowercase
+        lower,
+        /// UPPERCASE
+        upper,
+        /// Title Case
+        title,
+        /// snake_case
+        snake,
+        /// camelCase
+        camel,
+        /// PascalCase
+        pascal,
+        /// kebab-case
+        kebab,
+        /// SCREAMING_SNAKE_CASE
+        screaming-snake,
+    }
+
+    /// Convert string to specified case style
+    to-case: func(arr: borrow<array>, style: case-style) -> result<array, arrow-error>;
+
     /// ========== Array Generation ==========
 
     /// Create an Int64 array with values from start to end (exclusive) with step
@@ -684,6 +773,74 @@ interface compute {
         group-columns: list<u32>,
         aggregates: list<aggregate-spec>
     ) -> result<record-batch, arrow-error>;
+
+    /// ========== Multi-Aggregate GroupBy ==========
+
+    /// Aggregation specification with column name and function name
+    record column-aggregation {
+        /// Column name to aggregate
+        column: string,
+        /// Aggregation function name: "sum", "min", "max", "count", "count_distinct",
+        /// "mean", "avg", "first", "last", "std", "var", "median"
+        function: string,
+        /// Output column name for the result
+        output-name: string,
+    }
+
+    /// Group by columns (by name) with multiple aggregations
+    /// Returns record batch with group columns + all aggregation results
+    group-by-multi-agg: func(
+        batch: borrow<record-batch>,
+        group-columns: list<string>,
+        aggregations: list<column-aggregation>
+    ) -> result<record-batch, arrow-error>;
+
+    /// ========== Hierarchical Grouping (ROLLUP/CUBE) ==========
+
+    /// Hierarchical grouping mode
+    enum grouping-mode {
+        /// Standard group by (no subtotals)
+        standard,
+        /// ROLLUP - hierarchical subtotals
+        /// For columns (A, B, C): produces (A,B,C), (A,B,NULL), (A,NULL,NULL), (NULL,NULL,NULL)
+        rollup,
+        /// CUBE - all combinations of subtotals
+        /// For columns (A, B): produces all 2^n combinations
+        cube,
+    }
+
+    /// Group by with hierarchical totals (ROLLUP/CUBE)
+    /// Returns record batch with group columns + aggregation results + grouping_id column
+    /// The grouping_id column is a bitmask indicating which group columns are aggregated
+    group-by-hierarchical: func(
+        batch: borrow<record-batch>,
+        group-columns: list<string>,
+        aggregations: list<column-aggregation>,
+        mode: grouping-mode
+    ) -> result<record-batch, arrow-error>;
+
+    /// Get grouping level indicator for a specific column in hierarchical results
+    /// Returns bitmask indicating aggregation level (1 = column is aggregated/NULL in subtotal)
+    grouping-id: func(batch: borrow<record-batch>, group-columns: list<string>) -> result<array, arrow-error>;
+
+    /// ========== Bucketing & Histogram Grouping ==========
+
+    /// Assign values to buckets based on explicit boundaries
+    /// Returns array of bucket indices (0 to len(boundaries))
+    /// Values below first boundary get bucket 0, between boundaries[i-1] and boundaries[i] get bucket i
+    bucketize: func(arr: borrow<array>, boundaries: list<f64>) -> result<array, arrow-error>;
+
+    /// Create equal-width buckets automatically from min to max
+    /// Returns array of bucket indices (0 to num-buckets-1)
+    bucketize-equal-width: func(arr: borrow<array>, num-buckets: u32) -> result<array, arrow-error>;
+
+    /// Create equal-frequency (quantile-based) buckets
+    /// Each bucket has approximately equal number of values
+    bucketize-equal-freq: func(arr: borrow<array>, num-buckets: u32) -> result<array, arrow-error>;
+
+    /// Compute histogram with explicit boundaries
+    /// Returns record batch with columns: bucket_start, bucket_end, count
+    histogram-with-boundaries: func(arr: borrow<array>, boundaries: list<f64>) -> result<record-batch, arrow-error>;
 
     /// ========== Join Operations ==========
 
@@ -881,6 +1038,32 @@ interface compute {
 
     /// Soundex phonetic algorithm - returns soundex code for each string
     soundex: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Advanced Phonetic Algorithms ==========
+
+    /// Phonetic algorithm variants
+    enum phonetic-algorithm {
+        /// Original Soundex
+        soundex,
+        /// Refined Soundex (more precise)
+        refined-soundex,
+        /// Metaphone algorithm
+        metaphone,
+        /// Double Metaphone (primary encoding)
+        double-metaphone,
+        /// Double Metaphone (alternate encoding)
+        double-metaphone-alt,
+        /// NYSIIS (New York State Identification and Intelligence System)
+        nysiis,
+        /// Cologne phonetic (German names)
+        cologne,
+    }
+
+    /// Encode strings using specified phonetic algorithm
+    phonetic-encode: func(arr: borrow<array>, algorithm: phonetic-algorithm) -> result<array, arrow-error>;
+
+    /// Compare strings using phonetic similarity (returns true if phonetic codes match)
+    phonetic-match: func(left: borrow<array>, right: borrow<array>, algorithm: phonetic-algorithm) -> result<array, arrow-error>;
 
     /// Hamming distance (number of positions with different characters)
     /// Requires strings of equal length
@@ -1165,6 +1348,15 @@ interface compute {
 
     /// Running count over window
     window-count: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
+
+    /// Running mean over window
+    window-mean: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
+
+    /// Running variance (sample) over window
+    window-variance: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
+
+    /// Running standard deviation (sample) over window
+    window-stddev: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
 
     /// ========== Additional Aggregations ==========
 

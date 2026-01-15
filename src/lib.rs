@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 // Re-export for internal use
-use arrow_array::{ArrayRef, RecordBatch as ArrowRecordBatch};
+use arrow_array::{Array as ArrowArrayTrait, ArrayRef, RecordBatch as ArrowRecordBatch};
 
 // Global storage for fields (needed for recursive type definitions)
 thread_local! {
@@ -261,6 +261,76 @@ fn collect_f64_values(arr: &dyn arrow_array::Array) -> Result<Vec<f64>, compute:
         return Ok(u32_arr.iter().filter_map(|v| v.map(|x| x as f64)).collect());
     }
     Err(compute::ArrowError::InvalidArgument("Expected numeric array for statistical computation".to_string()))
+}
+
+// Helper function to collect f64 values with nulls preserved
+fn collect_nullable_f64_values(arr: &dyn arrow_array::Array) -> Result<Vec<Option<f64>>, compute::ArrowError> {
+    if let Some(f64_arr) = arr.as_any().downcast_ref::<arrow_array::Float64Array>() {
+        return Ok(f64_arr.iter().collect());
+    }
+    if let Some(f32_arr) = arr.as_any().downcast_ref::<arrow_array::Float32Array>() {
+        return Ok(f32_arr.iter().map(|v| v.map(|x| x as f64)).collect());
+    }
+    if let Some(i64_arr) = arr.as_any().downcast_ref::<arrow_array::Int64Array>() {
+        return Ok(i64_arr.iter().map(|v| v.map(|x| x as f64)).collect());
+    }
+    if let Some(i32_arr) = arr.as_any().downcast_ref::<arrow_array::Int32Array>() {
+        return Ok(i32_arr.iter().map(|v| v.map(|x| x as f64)).collect());
+    }
+    if let Some(i16_arr) = arr.as_any().downcast_ref::<arrow_array::Int16Array>() {
+        return Ok(i16_arr.iter().map(|v| v.map(|x| x as f64)).collect());
+    }
+    if let Some(i8_arr) = arr.as_any().downcast_ref::<arrow_array::Int8Array>() {
+        return Ok(i8_arr.iter().map(|v| v.map(|x| x as f64)).collect());
+    }
+    if let Some(u64_arr) = arr.as_any().downcast_ref::<arrow_array::UInt64Array>() {
+        return Ok(u64_arr.iter().map(|v| v.map(|x| x as f64)).collect());
+    }
+    if let Some(u32_arr) = arr.as_any().downcast_ref::<arrow_array::UInt32Array>() {
+        return Ok(u32_arr.iter().map(|v| v.map(|x| x as f64)).collect());
+    }
+    Err(compute::ArrowError::InvalidArgument("Expected numeric array".to_string()))
+}
+
+// Helper function to check if two rows have the same rank (same order_by values)
+fn are_same_rank(sort_indices: &[usize], order_by: &[arrays::Array], i: usize, j: usize) -> bool {
+    for arr in order_by {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let idx_i = sort_indices[i];
+        let idx_j = sort_indices[j];
+
+        // Compare values at both indices
+        if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            if str_arr.is_null(idx_i) != str_arr.is_null(idx_j) {
+                return false;
+            }
+            if !str_arr.is_null(idx_i) && str_arr.value(idx_i) != str_arr.value(idx_j) {
+                return false;
+            }
+        } else if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            if int_arr.is_null(idx_i) != int_arr.is_null(idx_j) {
+                return false;
+            }
+            if !int_arr.is_null(idx_i) && int_arr.value(idx_i) != int_arr.value(idx_j) {
+                return false;
+            }
+        } else if let Some(float_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Float64Array>() {
+            if float_arr.is_null(idx_i) != float_arr.is_null(idx_j) {
+                return false;
+            }
+            if !float_arr.is_null(idx_i) && (float_arr.value(idx_i) - float_arr.value(idx_j)).abs() > f64::EPSILON {
+                return false;
+            }
+        } else if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            if int_arr.is_null(idx_i) != int_arr.is_null(idx_j) {
+                return false;
+            }
+            if !int_arr.is_null(idx_i) && int_arr.value(idx_i) != int_arr.value(idx_j) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 // Helper functions for date arithmetic
@@ -587,6 +657,185 @@ fn get_string_opt(arr: &arrow_array::StringArray, idx: usize) -> Option<String> 
     if arr.is_null(idx) { None } else { Some(arr.value(idx).to_string()) }
 }
 
+/// Helper for stable sort to indices
+/// Arrow's sort_to_indices is already stable, this is a wrapper with explicit stable semantics
+fn sort_to_indices_stable_impl(arr: &ArrayRef, descending: bool) -> Result<arrow_array::UInt32Array, compute::ArrowError> {
+    let sort_opts = arrow_ord::sort::SortOptions {
+        descending,
+        nulls_first: false,
+    };
+
+    // Arrow's sort_to_indices uses a stable sorting algorithm (introsort with insertion sort fallback)
+    arrow_ord::sort::sort_to_indices(arr, Some(sort_opts), None)
+        .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))
+}
+
+/// Helper for saturating binary operations on integer arrays
+fn saturating_binary_op<F>(left: &ArrayRef, right: &ArrayRef, op: F) -> Result<arrays::Array, compute::ArrowError>
+where
+    F: Fn(i64, i64) -> i64,
+{
+    use arrow_array::Array as ArrowArrayTrait;
+
+    if left.len() != right.len() {
+        return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+    }
+
+    macro_rules! saturate_op {
+        ($left_type:ty, $right_type:ty, $result_type:ty, $native:ty) => {{
+            if let (Some(l), Some(r)) = (
+                left.as_any().downcast_ref::<$left_type>(),
+                right.as_any().downcast_ref::<$right_type>(),
+            ) {
+                let result: $result_type = l.iter().zip(r.iter())
+                    .map(|(a, b)| match (a, b) {
+                        (Some(av), Some(bv)) => Some(op(av as i64, bv as i64) as $native),
+                        _ => None,
+                    })
+                    .collect();
+                return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+            }
+        }};
+    }
+
+    saturate_op!(arrow_array::Int8Array, arrow_array::Int8Array, arrow_array::Int8Array, i8);
+    saturate_op!(arrow_array::Int16Array, arrow_array::Int16Array, arrow_array::Int16Array, i16);
+    saturate_op!(arrow_array::Int32Array, arrow_array::Int32Array, arrow_array::Int32Array, i32);
+    saturate_op!(arrow_array::Int64Array, arrow_array::Int64Array, arrow_array::Int64Array, i64);
+
+    Err(compute::ArrowError::InvalidArgument("Saturating operations require integer arrays of the same type".to_string()))
+}
+
+/// Helper for saturating scalar operations on integer arrays
+fn saturating_scalar_op<F>(arr: &ArrayRef, scalar: i64, op: F) -> Result<arrays::Array, compute::ArrowError>
+where
+    F: Fn(i64, i64) -> i64,
+{
+    use arrow_array::Array as ArrowArrayTrait;
+
+    macro_rules! saturate_scalar_op {
+        ($arr_type:ty, $result_type:ty, $native:ty) => {{
+            if let Some(a) = arr.as_any().downcast_ref::<$arr_type>() {
+                let result: $result_type = a.iter()
+                    .map(|v| v.map(|x| op(x as i64, scalar) as $native))
+                    .collect();
+                return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+            }
+        }};
+    }
+
+    saturate_scalar_op!(arrow_array::Int8Array, arrow_array::Int8Array, i8);
+    saturate_scalar_op!(arrow_array::Int16Array, arrow_array::Int16Array, i16);
+    saturate_scalar_op!(arrow_array::Int32Array, arrow_array::Int32Array, i32);
+    saturate_scalar_op!(arrow_array::Int64Array, arrow_array::Int64Array, i64);
+
+    Err(compute::ArrowError::InvalidArgument("Saturating operations require integer arrays".to_string()))
+}
+
+/// Helper for case conversion
+fn convert_case(s: &str, style: &compute::CaseStyle) -> String {
+    match style {
+        compute::CaseStyle::Lower => s.to_lowercase(),
+        compute::CaseStyle::Upper => s.to_uppercase(),
+        compute::CaseStyle::Title => {
+            let mut result = String::with_capacity(s.len());
+            let mut capitalize_next = true;
+            for c in s.chars() {
+                if c.is_whitespace() || c == '-' || c == '_' {
+                    result.push(c);
+                    capitalize_next = true;
+                } else if capitalize_next {
+                    result.extend(c.to_uppercase());
+                    capitalize_next = false;
+                } else {
+                    result.extend(c.to_lowercase());
+                }
+            }
+            result
+        }
+        compute::CaseStyle::Snake => {
+            let mut result = String::with_capacity(s.len() + 10);
+            let mut prev_lower = false;
+            for c in s.chars() {
+                if c.is_uppercase() {
+                    if prev_lower && !result.is_empty() {
+                        result.push('_');
+                    }
+                    result.extend(c.to_lowercase());
+                    prev_lower = false;
+                } else if c.is_whitespace() || c == '-' {
+                    if !result.ends_with('_') && !result.is_empty() {
+                        result.push('_');
+                    }
+                    prev_lower = false;
+                } else {
+                    result.push(c);
+                    prev_lower = c.is_lowercase();
+                }
+            }
+            result
+        }
+        compute::CaseStyle::Camel => {
+            let mut result = String::with_capacity(s.len());
+            let mut capitalize_next = false;
+            for c in s.chars() {
+                if c.is_whitespace() || c == '-' || c == '_' {
+                    capitalize_next = true;
+                } else if capitalize_next {
+                    result.extend(c.to_uppercase());
+                    capitalize_next = false;
+                } else if result.is_empty() {
+                    result.extend(c.to_lowercase());
+                } else {
+                    result.push(c);
+                }
+            }
+            result
+        }
+        compute::CaseStyle::Pascal => {
+            let mut result = String::with_capacity(s.len());
+            let mut capitalize_next = true;
+            for c in s.chars() {
+                if c.is_whitespace() || c == '-' || c == '_' {
+                    capitalize_next = true;
+                } else if capitalize_next {
+                    result.extend(c.to_uppercase());
+                    capitalize_next = false;
+                } else {
+                    result.push(c);
+                }
+            }
+            result
+        }
+        compute::CaseStyle::Kebab => {
+            let mut result = String::with_capacity(s.len() + 10);
+            let mut prev_lower = false;
+            for c in s.chars() {
+                if c.is_uppercase() {
+                    if prev_lower && !result.is_empty() {
+                        result.push('-');
+                    }
+                    result.extend(c.to_lowercase());
+                    prev_lower = false;
+                } else if c.is_whitespace() || c == '_' {
+                    if !result.ends_with('-') && !result.is_empty() {
+                        result.push('-');
+                    }
+                    prev_lower = false;
+                } else {
+                    result.push(c);
+                    prev_lower = c.is_lowercase();
+                }
+            }
+            result
+        }
+        compute::CaseStyle::ScreamingSnake => {
+            let snake = convert_case(s, &compute::CaseStyle::Snake);
+            snake.to_uppercase()
+        }
+    }
+}
+
 // Main component struct
 struct Component;
 
@@ -629,6 +878,175 @@ impl types::Guest for Component {
         ));
 
         Ok(types::Schema::new(SchemaImpl { inner: merged_schema }))
+    }
+
+    fn compare_schemas(left: types::SchemaBorrow<'_>, right: types::SchemaBorrow<'_>) -> types::SchemaDiffResult {
+        let left_schema = left.get::<SchemaImpl>();
+        let right_schema = right.get::<SchemaImpl>();
+
+        let left_names: std::collections::HashSet<_> = left_schema.inner.fields().iter().map(|f| f.name().clone()).collect();
+        let right_names: std::collections::HashSet<_> = right_schema.inner.fields().iter().map(|f| f.name().clone()).collect();
+
+        // Fields only in left
+        let left_only: Vec<String> = left_names.difference(&right_names).cloned().collect();
+
+        // Fields only in right
+        let right_only: Vec<String> = right_names.difference(&left_names).cloned().collect();
+
+        // Fields in both - check for type and nullability mismatches
+        let common_names: Vec<String> = left_names.intersection(&right_names).cloned().collect();
+
+        let mut type_mismatches = Vec::new();
+        let mut nullability_mismatches = Vec::new();
+
+        for name in common_names {
+            let left_field = left_schema.inner.field_with_name(&name).unwrap();
+            let right_field = right_schema.inner.field_with_name(&name).unwrap();
+
+            // Check type mismatch
+            if left_field.data_type() != right_field.data_type() {
+                type_mismatches.push((
+                    name.clone(),
+                    format!("{:?}", left_field.data_type()),
+                    format!("{:?}", right_field.data_type()),
+                ));
+            }
+
+            // Check nullability mismatch
+            if left_field.is_nullable() != right_field.is_nullable() {
+                nullability_mismatches.push(name.clone());
+            }
+        }
+
+        types::SchemaDiffResult {
+            left_only,
+            right_only,
+            type_mismatches,
+            nullability_mismatches,
+        }
+    }
+
+    fn schemas_compatible(left: types::SchemaBorrow<'_>, right: types::SchemaBorrow<'_>) -> bool {
+        let left_schema = left.get::<SchemaImpl>();
+        let right_schema = right.get::<SchemaImpl>();
+
+        // Check if each field in left can be cast to the corresponding field in right
+        for left_field in left_schema.inner.fields() {
+            match right_schema.inner.field_with_name(left_field.name()) {
+                Ok(right_field) => {
+                    // Check if types are castable
+                    // Use arrow_cast::can_cast_types
+                    if !arrow_cast::can_cast_types(left_field.data_type(), right_field.data_type()) {
+                        return false;
+                    }
+                    // If left is nullable but right is not, that's incompatible
+                    if left_field.is_nullable() && !right_field.is_nullable() {
+                        return false;
+                    }
+                }
+                Err(_) => {
+                    // Field doesn't exist in right schema, that's okay for compatibility
+                    // (extra fields can be ignored)
+                }
+            }
+        }
+
+        true
+    }
+
+    fn schema_merge_two(left: types::SchemaBorrow<'_>, right: types::SchemaBorrow<'_>) -> Result<types::Schema, types::ArrowError> {
+        let left_schema = left.get::<SchemaImpl>();
+        let right_schema = right.get::<SchemaImpl>();
+
+        let mut merged_fields: Vec<Arc<arrow_schema::Field>> = Vec::new();
+        let mut merged_metadata: HashMap<String, String> = HashMap::new();
+
+        // Add all fields from left
+        for field in left_schema.inner.fields() {
+            merged_fields.push(field.clone());
+        }
+
+        // Add fields from right that aren't in left
+        for field in right_schema.inner.fields() {
+            if !merged_fields.iter().any(|f| f.name() == field.name()) {
+                merged_fields.push(field.clone());
+            }
+        }
+
+        // Merge metadata (right overrides left)
+        for (k, v) in left_schema.inner.metadata() {
+            merged_metadata.insert(k.clone(), v.clone());
+        }
+        for (k, v) in right_schema.inner.metadata() {
+            merged_metadata.insert(k.clone(), v.clone());
+        }
+
+        let merged_schema = Arc::new(arrow_schema::Schema::new_with_metadata(
+            arrow_schema::Fields::from(merged_fields),
+            merged_metadata,
+        ));
+
+        Ok(types::Schema::new(SchemaImpl { inner: merged_schema }))
+    }
+
+    fn schema_project(schema: types::SchemaBorrow<'_>, fields: Vec<String>) -> Result<types::Schema, types::ArrowError> {
+        let schema_impl = schema.get::<SchemaImpl>();
+
+        let mut projected_fields: Vec<Arc<arrow_schema::Field>> = Vec::new();
+
+        for field_name in &fields {
+            match schema_impl.inner.field_with_name(field_name) {
+                Ok(field) => projected_fields.push(Arc::new(field.clone())),
+                Err(_) => {
+                    return Err(types::ArrowError::InvalidArgument(format!(
+                        "Field '{}' not found in schema",
+                        field_name
+                    )));
+                }
+            }
+        }
+
+        let projected_schema = Arc::new(arrow_schema::Schema::new(
+            arrow_schema::Fields::from(projected_fields),
+        ));
+
+        Ok(types::Schema::new(SchemaImpl { inner: projected_schema }))
+    }
+
+    fn schema_rename(schema: types::SchemaBorrow<'_>, old_names: Vec<String>, new_names: Vec<String>) -> Result<types::Schema, types::ArrowError> {
+        if old_names.len() != new_names.len() {
+            return Err(types::ArrowError::InvalidArgument(
+                "old_names and new_names must have the same length".to_string()
+            ));
+        }
+
+        let schema_impl = schema.get::<SchemaImpl>();
+
+        // Create a mapping from old name to new name
+        let rename_map: HashMap<String, String> = old_names.iter().cloned().zip(new_names.iter().cloned()).collect();
+
+        // Create new fields with renamed names
+        let renamed_fields: Vec<Arc<arrow_schema::Field>> = schema_impl.inner.fields()
+            .iter()
+            .map(|field| {
+                if let Some(new_name) = rename_map.get(field.name()) {
+                    Arc::new(arrow_schema::Field::new(
+                        new_name.clone(),
+                        field.data_type().clone(),
+                        field.is_nullable(),
+                    ).with_metadata(field.metadata().clone()))
+                } else {
+                    field.clone()
+                }
+            })
+            .collect();
+
+        let renamed_schema = Arc::new(arrow_schema::Schema::new_with_metadata(
+            arrow_schema::Fields::from(renamed_fields),
+            schema_impl.inner.metadata().clone(),
+        ));
+
+        Ok(types::Schema::new(SchemaImpl { inner: renamed_schema }))
     }
 }
 
@@ -4312,6 +4730,97 @@ fn parse_decimal_string(s: &str, scale: i8) -> Result<i128, String> {
     Ok(if negative { -result } else { result })
 }
 
+/// Extract f64 values from a numeric array
+fn extract_f64_values(arr: &Arc<dyn arrow_array::Array>) -> Result<Vec<Option<f64>>, compute::ArrowError> {
+    use arrow_array::Array as ArrowArrayTrait;
+
+    if let Some(float_arr) = arr.as_any().downcast_ref::<arrow_array::Float64Array>() {
+        Ok((0..float_arr.len()).map(|i| {
+            if float_arr.is_null(i) { None } else { Some(float_arr.value(i)) }
+        }).collect())
+    } else if let Some(float_arr) = arr.as_any().downcast_ref::<arrow_array::Float32Array>() {
+        Ok((0..float_arr.len()).map(|i| {
+            if float_arr.is_null(i) { None } else { Some(float_arr.value(i) as f64) }
+        }).collect())
+    } else if let Some(int_arr) = arr.as_any().downcast_ref::<arrow_array::Int64Array>() {
+        Ok((0..int_arr.len()).map(|i| {
+            if int_arr.is_null(i) { None } else { Some(int_arr.value(i) as f64) }
+        }).collect())
+    } else if let Some(int_arr) = arr.as_any().downcast_ref::<arrow_array::Int32Array>() {
+        Ok((0..int_arr.len()).map(|i| {
+            if int_arr.is_null(i) { None } else { Some(int_arr.value(i) as f64) }
+        }).collect())
+    } else if let Some(int_arr) = arr.as_any().downcast_ref::<arrow_array::Int16Array>() {
+        Ok((0..int_arr.len()).map(|i| {
+            if int_arr.is_null(i) { None } else { Some(int_arr.value(i) as f64) }
+        }).collect())
+    } else if let Some(int_arr) = arr.as_any().downcast_ref::<arrow_array::Int8Array>() {
+        Ok((0..int_arr.len()).map(|i| {
+            if int_arr.is_null(i) { None } else { Some(int_arr.value(i) as f64) }
+        }).collect())
+    } else if let Some(uint_arr) = arr.as_any().downcast_ref::<arrow_array::UInt64Array>() {
+        Ok((0..uint_arr.len()).map(|i| {
+            if uint_arr.is_null(i) { None } else { Some(uint_arr.value(i) as f64) }
+        }).collect())
+    } else if let Some(uint_arr) = arr.as_any().downcast_ref::<arrow_array::UInt32Array>() {
+        Ok((0..uint_arr.len()).map(|i| {
+            if uint_arr.is_null(i) { None } else { Some(uint_arr.value(i) as f64) }
+        }).collect())
+    } else {
+        Err(compute::ArrowError::InvalidArgument("Array must be numeric for bucketing/histogram".to_string()))
+    }
+}
+
+/// Extract a string representation of a value from an array at given row
+fn extract_string_value(arr: &dyn arrow_array::Array, row: usize) -> String {
+    use arrow_array::Array as ArrowArrayTrait;
+
+    if arr.is_null(row) {
+        return "NULL".to_string();
+    }
+
+    if let Some(str_arr) = arr.as_any().downcast_ref::<arrow_array::StringArray>() {
+        str_arr.value(row).to_string()
+    } else if let Some(int_arr) = arr.as_any().downcast_ref::<arrow_array::Int64Array>() {
+        int_arr.value(row).to_string()
+    } else if let Some(int_arr) = arr.as_any().downcast_ref::<arrow_array::Int32Array>() {
+        int_arr.value(row).to_string()
+    } else if let Some(int_arr) = arr.as_any().downcast_ref::<arrow_array::Int16Array>() {
+        int_arr.value(row).to_string()
+    } else if let Some(int_arr) = arr.as_any().downcast_ref::<arrow_array::Int8Array>() {
+        int_arr.value(row).to_string()
+    } else if let Some(uint_arr) = arr.as_any().downcast_ref::<arrow_array::UInt64Array>() {
+        uint_arr.value(row).to_string()
+    } else if let Some(uint_arr) = arr.as_any().downcast_ref::<arrow_array::UInt32Array>() {
+        uint_arr.value(row).to_string()
+    } else if let Some(float_arr) = arr.as_any().downcast_ref::<arrow_array::Float64Array>() {
+        float_arr.value(row).to_string()
+    } else if let Some(float_arr) = arr.as_any().downcast_ref::<arrow_array::Float32Array>() {
+        float_arr.value(row).to_string()
+    } else if let Some(bool_arr) = arr.as_any().downcast_ref::<arrow_array::BooleanArray>() {
+        bool_arr.value(row).to_string()
+    } else {
+        format!("{}", row)
+    }
+}
+
+/// Parse aggregation function name to AggFunction enum
+fn parse_agg_function(name: &str) -> Result<compute::AggFunction, compute::ArrowError> {
+    match name.to_lowercase().as_str() {
+        "sum" => Ok(compute::AggFunction::Sum),
+        "min" => Ok(compute::AggFunction::Min),
+        "max" => Ok(compute::AggFunction::Max),
+        "count" => Ok(compute::AggFunction::Count),
+        "mean" | "avg" | "average" => Ok(compute::AggFunction::Mean),
+        "first" => Ok(compute::AggFunction::First),
+        "last" => Ok(compute::AggFunction::Last),
+        _ => Err(compute::ArrowError::InvalidArgument(format!(
+            "Unknown aggregation function '{}'. Supported: sum, min, max, count, mean, avg, first, last",
+            name
+        ))),
+    }
+}
+
 /// Helper function to aggregate values at given row indices
 fn aggregate_values(arr: &dyn arrow_array::Array, rows: &[usize], func: &compute::AggFunction) -> Option<f64> {
     use arrow_array::Array as ArrowArrayTrait;
@@ -4785,6 +5294,632 @@ fn compute_soundex(s: &str) -> String {
     }
 
     result
+}
+
+/// Refined Soundex - more detailed phonetic code than standard Soundex
+fn compute_refined_soundex(s: &str) -> String {
+    let chars: Vec<char> = s.to_uppercase().chars().filter(|c| c.is_ascii_alphabetic()).collect();
+
+    if chars.is_empty() {
+        return "0".to_string();
+    }
+
+    // Refined Soundex codes (more granular than standard Soundex)
+    let refined_code = |c: char| -> char {
+        match c {
+            'B' | 'P' => '1',
+            'F' | 'V' => '2',
+            'C' | 'K' | 'S' => '3',
+            'G' | 'J' => '4',
+            'Q' | 'X' | 'Z' => '5',
+            'D' | 'T' => '6',
+            'L' => '7',
+            'M' | 'N' => '8',
+            'R' => '9',
+            _ => '0', // A, E, I, O, U, H, W, Y
+        }
+    };
+
+    let mut result = String::with_capacity(10);
+    result.push(chars[0]);
+
+    let mut last_code = refined_code(chars[0]);
+
+    for &c in &chars[1..] {
+        let code = refined_code(c);
+        if code != '0' && code != last_code {
+            result.push(code);
+        }
+        last_code = code;
+    }
+
+    result
+}
+
+/// Metaphone - phonetic algorithm for English pronunciation
+fn compute_metaphone(s: &str) -> String {
+    let s = s.to_uppercase();
+    let chars: Vec<char> = s.chars().filter(|c| c.is_ascii_alphabetic()).collect();
+
+    if chars.is_empty() {
+        return String::new();
+    }
+
+    let mut result = String::with_capacity(6);
+    let len = chars.len();
+
+    let get_char = |i: usize| -> char {
+        if i < len { chars[i] } else { '\0' }
+    };
+
+    let mut i = 0;
+
+    // Handle initial letter combinations
+    match (get_char(0), get_char(1)) {
+        ('K', 'N') | ('G', 'N') | ('P', 'N') | ('A', 'E') | ('W', 'R') => i = 1,
+        ('W', 'H') => { i = 1; result.push('W'); }
+        ('X', _) => { result.push('S'); i = 1; }
+        _ => {}
+    }
+
+    while i < len && result.len() < 6 {
+        let c = get_char(i);
+        let next = get_char(i + 1);
+        let prev = if i > 0 { get_char(i - 1) } else { '\0' };
+
+        match c {
+            'A' | 'E' | 'I' | 'O' | 'U' => {
+                if i == 0 { result.push(c); }
+            }
+            'B' => {
+                if prev != 'M' || i + 1 < len {
+                    result.push('B');
+                }
+            }
+            'C' => {
+                if next == 'I' || next == 'E' || next == 'Y' {
+                    if next == 'I' && get_char(i + 2) == 'A' {
+                        result.push('X');
+                    } else {
+                        result.push('S');
+                    }
+                } else if next == 'H' {
+                    result.push('X');
+                    i += 1;
+                } else {
+                    result.push('K');
+                }
+            }
+            'D' => {
+                if next == 'G' && (get_char(i + 2) == 'E' || get_char(i + 2) == 'Y' || get_char(i + 2) == 'I') {
+                    result.push('J');
+                    i += 1;
+                } else {
+                    result.push('T');
+                }
+            }
+            'F' => result.push('F'),
+            'G' => {
+                if next == 'H' {
+                    if i + 2 < len && !matches!(get_char(i + 2), 'A' | 'E' | 'I' | 'O' | 'U') {
+                        i += 1;
+                    } else {
+                        result.push('K');
+                        i += 1;
+                    }
+                } else if next == 'N' {
+                    if i + 2 >= len || (i + 2 < len && get_char(i + 2) != 'E') {
+                        // skip
+                    } else {
+                        result.push('K');
+                    }
+                } else if next == 'I' || next == 'E' || next == 'Y' {
+                    result.push('J');
+                } else {
+                    result.push('K');
+                }
+            }
+            'H' => {
+                if matches!(prev, 'A' | 'E' | 'I' | 'O' | 'U') && !matches!(next, 'A' | 'E' | 'I' | 'O' | 'U') {
+                    // silent
+                } else if matches!(next, 'A' | 'E' | 'I' | 'O' | 'U') {
+                    result.push('H');
+                }
+            }
+            'J' => result.push('J'),
+            'K' => {
+                if prev != 'C' { result.push('K'); }
+            }
+            'L' => result.push('L'),
+            'M' => result.push('M'),
+            'N' => result.push('N'),
+            'P' => {
+                if next == 'H' {
+                    result.push('F');
+                    i += 1;
+                } else {
+                    result.push('P');
+                }
+            }
+            'Q' => result.push('K'),
+            'R' => result.push('R'),
+            'S' => {
+                if next == 'H' {
+                    result.push('X');
+                    i += 1;
+                } else if next == 'I' && (get_char(i + 2) == 'O' || get_char(i + 2) == 'A') {
+                    result.push('X');
+                } else {
+                    result.push('S');
+                }
+            }
+            'T' => {
+                if next == 'I' && (get_char(i + 2) == 'O' || get_char(i + 2) == 'A') {
+                    result.push('X');
+                } else if next == 'H' {
+                    result.push('0');  // TH sound
+                    i += 1;
+                } else if next != 'C' || get_char(i + 2) != 'H' {
+                    result.push('T');
+                }
+            }
+            'V' => result.push('F'),
+            'W' | 'Y' => {
+                if matches!(next, 'A' | 'E' | 'I' | 'O' | 'U') {
+                    result.push(c);
+                }
+            }
+            'X' => {
+                result.push('K');
+                result.push('S');
+            }
+            'Z' => result.push('S'),
+            _ => {}
+        }
+        i += 1;
+    }
+
+    result
+}
+
+/// Double Metaphone - returns primary or alternate encoding
+fn compute_double_metaphone(s: &str, alternate: bool) -> String {
+    let s = s.to_uppercase();
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+
+    if len == 0 {
+        return String::new();
+    }
+
+    let mut primary = String::with_capacity(6);
+    let mut secondary = String::with_capacity(6);
+
+    let get_char = |i: usize| -> char {
+        if i < len { chars[i] } else { '\0' }
+    };
+
+    let is_vowel = |i: usize| -> bool {
+        matches!(get_char(i), 'A' | 'E' | 'I' | 'O' | 'U')
+    };
+
+    let mut i = 0;
+
+    // Skip initial silent letters
+    if matches!((get_char(0), get_char(1)), ('G', 'N') | ('K', 'N') | ('P', 'N') | ('W', 'R') | ('P', 'S')) {
+        i = 1;
+    }
+
+    // Initial X -> S
+    if get_char(0) == 'X' {
+        primary.push('S');
+        secondary.push('S');
+        i = 1;
+    }
+
+    while i < len && (primary.len() < 6 || secondary.len() < 6) {
+        let c = get_char(i);
+
+        match c {
+            'A' | 'E' | 'I' | 'O' | 'U' => {
+                if i == 0 {
+                    primary.push('A');
+                    secondary.push('A');
+                }
+            }
+            'B' => {
+                primary.push('P');
+                secondary.push('P');
+                if get_char(i + 1) == 'B' { i += 1; }
+            }
+            'C' => {
+                if get_char(i + 1) == 'H' {
+                    primary.push('X');
+                    secondary.push('X');
+                    i += 1;
+                } else if get_char(i + 1) == 'K' {
+                    primary.push('K');
+                    secondary.push('K');
+                    i += 1;
+                } else if matches!(get_char(i + 1), 'I' | 'E' | 'Y') {
+                    primary.push('S');
+                    secondary.push('S');
+                } else {
+                    primary.push('K');
+                    secondary.push('K');
+                }
+            }
+            'D' => {
+                if get_char(i + 1) == 'G' && matches!(get_char(i + 2), 'E' | 'I' | 'Y') {
+                    primary.push('J');
+                    secondary.push('J');
+                    i += 2;
+                } else {
+                    primary.push('T');
+                    secondary.push('T');
+                    if get_char(i + 1) == 'D' { i += 1; }
+                }
+            }
+            'F' => {
+                primary.push('F');
+                secondary.push('F');
+                if get_char(i + 1) == 'F' { i += 1; }
+            }
+            'G' => {
+                if get_char(i + 1) == 'H' {
+                    if i > 0 && !is_vowel(i - 1) {
+                        primary.push('K');
+                        secondary.push('K');
+                    } else if i == 0 {
+                        primary.push('J');
+                        secondary.push('J');
+                    }
+                    i += 1;
+                } else if get_char(i + 1) == 'N' {
+                    if i == 0 && is_vowel(1) {
+                        primary.push('K');
+                        secondary.push('N');
+                    } else if get_char(i + 2) != 'E' || get_char(i + 3) != 'Y' {
+                        primary.push('N');
+                        secondary.push('N');
+                    }
+                } else if matches!(get_char(i + 1), 'I' | 'E' | 'Y') {
+                    primary.push('J');
+                    secondary.push('K');
+                } else {
+                    primary.push('K');
+                    secondary.push('K');
+                    if get_char(i + 1) == 'G' { i += 1; }
+                }
+            }
+            'H' => {
+                if (i == 0 || is_vowel(i - 1)) && is_vowel(i + 1) {
+                    primary.push('H');
+                    secondary.push('H');
+                }
+            }
+            'J' => {
+                primary.push('J');
+                secondary.push('J');
+                if get_char(i + 1) == 'J' { i += 1; }
+            }
+            'K' => {
+                primary.push('K');
+                secondary.push('K');
+                if get_char(i + 1) == 'K' { i += 1; }
+            }
+            'L' => {
+                primary.push('L');
+                secondary.push('L');
+                if get_char(i + 1) == 'L' { i += 1; }
+            }
+            'M' => {
+                primary.push('M');
+                secondary.push('M');
+                if get_char(i + 1) == 'M' { i += 1; }
+            }
+            'N' => {
+                primary.push('N');
+                secondary.push('N');
+                if get_char(i + 1) == 'N' { i += 1; }
+            }
+            'P' => {
+                if get_char(i + 1) == 'H' {
+                    primary.push('F');
+                    secondary.push('F');
+                    i += 1;
+                } else {
+                    primary.push('P');
+                    secondary.push('P');
+                    if get_char(i + 1) == 'P' { i += 1; }
+                }
+            }
+            'Q' => {
+                primary.push('K');
+                secondary.push('K');
+                if get_char(i + 1) == 'Q' { i += 1; }
+            }
+            'R' => {
+                primary.push('R');
+                secondary.push('R');
+                if get_char(i + 1) == 'R' { i += 1; }
+            }
+            'S' => {
+                if get_char(i + 1) == 'H' {
+                    primary.push('X');
+                    secondary.push('X');
+                    i += 1;
+                } else if get_char(i + 1) == 'C' && get_char(i + 2) == 'H' {
+                    primary.push('X');
+                    secondary.push('X');
+                    i += 2;
+                } else {
+                    primary.push('S');
+                    secondary.push('S');
+                    if get_char(i + 1) == 'S' { i += 1; }
+                }
+            }
+            'T' => {
+                if get_char(i + 1) == 'H' {
+                    primary.push('0');  // TH
+                    secondary.push('T');
+                    i += 1;
+                } else if get_char(i + 1) == 'C' && get_char(i + 2) == 'H' {
+                    // skip
+                } else {
+                    primary.push('T');
+                    secondary.push('T');
+                    if get_char(i + 1) == 'T' { i += 1; }
+                }
+            }
+            'V' => {
+                primary.push('F');
+                secondary.push('F');
+                if get_char(i + 1) == 'V' { i += 1; }
+            }
+            'W' => {
+                if is_vowel(i + 1) {
+                    primary.push('A');
+                    secondary.push('F');
+                }
+            }
+            'X' => {
+                primary.push_str("KS");
+                secondary.push_str("KS");
+                if get_char(i + 1) == 'X' { i += 1; }
+            }
+            'Y' => {
+                if is_vowel(i + 1) {
+                    primary.push('A');
+                    secondary.push('A');
+                }
+            }
+            'Z' => {
+                primary.push('S');
+                secondary.push('S');
+                if get_char(i + 1) == 'Z' { i += 1; }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if alternate { secondary } else { primary }
+}
+
+/// NYSIIS - New York State Identification and Intelligence System
+fn compute_nysiis(s: &str) -> String {
+    let s = s.to_uppercase();
+    let chars: Vec<char> = s.chars().filter(|c| c.is_ascii_alphabetic()).collect();
+
+    if chars.is_empty() {
+        return String::new();
+    }
+
+    let mut result: Vec<char> = chars.clone();
+
+    // Handle initial patterns
+    if result.len() >= 3 {
+        let start: String = result.iter().take(3).collect();
+        if start == "MAC" {
+            result.splice(0..3, "MCC".chars());
+        } else if start == "KN " || (result.len() >= 2 && result[0] == 'K' && result[1] == 'N') {
+            result.remove(0);
+        }
+    }
+    if result.len() >= 2 {
+        let start: String = result.iter().take(2).collect();
+        if start == "PH" {
+            result.splice(0..2, "FF".chars());
+        } else if start == "PF" {
+            result.splice(0..2, "FF".chars());
+        } else if result[0] == 'K' {
+            result[0] = 'C';
+        }
+    }
+    if result.len() >= 3 && result[0] == 'S' && result[1] == 'C' && result[2] == 'H' {
+        result.splice(0..3, "SSS".chars());
+    }
+
+    // Handle ending patterns
+    let len = result.len();
+    if len >= 2 {
+        let end: String = result.iter().skip(len - 2).collect();
+        if end == "EE" || end == "IE" {
+            result.truncate(len - 2);
+            result.push('Y');
+        } else if end == "DT" || end == "RT" || end == "RD" || end == "NT" || end == "ND" {
+            result.truncate(len - 2);
+            result.push('D');
+        }
+    }
+
+    // First character is kept
+    let first = result[0];
+
+    // Process remaining characters
+    let mut encoded = String::with_capacity(8);
+    encoded.push(first);
+
+    let mut i = 1;
+    while i < result.len() {
+        let c = result[i];
+        let prev = if i > 0 { result[i - 1] } else { '\0' };
+        let next = if i + 1 < result.len() { result[i + 1] } else { '\0' };
+
+        let replacement = match c {
+            'E' | 'I' | 'O' | 'U' => 'A',
+            'Q' => 'G',
+            'Z' => 'S',
+            'M' => 'N',
+            'K' => if next == 'N' { 'N' } else { 'C' },
+            'S' if next == 'C' && i + 2 < result.len() && result[i + 2] == 'H' => 'S',
+            'P' if next == 'H' => 'F',
+            'H' if !matches!(prev, 'A' | 'E' | 'I' | 'O' | 'U') || !matches!(next, 'A' | 'E' | 'I' | 'O' | 'U') => prev,
+            'W' if matches!(prev, 'A' | 'E' | 'I' | 'O' | 'U') => prev,
+            _ => c,
+        };
+
+        // Don't add consecutive duplicates
+        if encoded.chars().last() != Some(replacement) {
+            encoded.push(replacement);
+        }
+
+        i += 1;
+    }
+
+    // Remove trailing S
+    if encoded.len() > 1 && encoded.ends_with('S') {
+        encoded.pop();
+    }
+
+    // Remove trailing A (if not the only character)
+    if encoded.len() > 1 && encoded.ends_with('A') {
+        encoded.pop();
+    }
+
+    // Limit to 6 characters
+    encoded.truncate(6);
+    encoded
+}
+
+/// Cologne Phonetics - phonetic algorithm for German language
+fn compute_cologne(s: &str) -> String {
+    let s = s.to_uppercase();
+    let chars: Vec<char> = s.chars().filter(|c| c.is_ascii_alphabetic()).collect();
+
+    if chars.is_empty() {
+        return String::new();
+    }
+
+    let len = chars.len();
+
+    let get_char = |i: usize| -> char {
+        if i < len { chars[i] } else { '\0' }
+    };
+
+    let mut result = String::with_capacity(len);
+
+    for i in 0..len {
+        let c = get_char(i);
+        let prev = if i > 0 { get_char(i - 1) } else { '\0' };
+        let next = get_char(i + 1);
+
+        match c {
+            'A' | 'E' | 'I' | 'O' | 'U' | 'J' | 'Y' => {
+                result.push('0');
+            }
+            'H' => continue, // H is ignored
+            'B' => {
+                result.push('1');
+            }
+            'P' => {
+                result.push(if next == 'H' { '3' } else { '1' });
+            }
+            'D' | 'T' => {
+                result.push(if matches!(next, 'C' | 'S' | 'Z') { '8' } else { '2' });
+            }
+            'F' | 'V' | 'W' => {
+                result.push('3');
+            }
+            'G' | 'K' | 'Q' => {
+                result.push('4');
+            }
+            'X' => {
+                if !matches!(prev, 'C' | 'K' | 'Q') {
+                    result.push('4');
+                    result.push('8');
+                } else {
+                    result.push('8');
+                }
+            }
+            'L' => {
+                result.push('5');
+            }
+            'M' | 'N' => {
+                result.push('6');
+            }
+            'R' => {
+                result.push('7');
+            }
+            'S' | 'Z' => {
+                result.push('8');
+            }
+            'C' => {
+                let code = if i == 0 {
+                    if matches!(next, 'A' | 'H' | 'K' | 'L' | 'O' | 'Q' | 'R' | 'U' | 'X') { '4' }
+                    else { '8' }
+                } else if matches!(prev, 'S' | 'Z') {
+                    '8'
+                } else if matches!(next, 'A' | 'H' | 'K' | 'O' | 'Q' | 'U' | 'X') {
+                    '4'
+                } else {
+                    '8'
+                };
+                result.push(code);
+            }
+            _ => continue,
+        }
+    }
+
+    // Remove consecutive duplicates
+    let mut final_result = String::with_capacity(result.len());
+    let mut last = '\0';
+    for c in result.chars() {
+        if c != last {
+            final_result.push(c);
+            last = c;
+        }
+    }
+
+    // Remove all '0's except if it's the only character or at the start
+    if final_result.len() > 1 {
+        let first = final_result.chars().next().unwrap();
+        let rest: String = final_result.chars().skip(1).filter(|&c| c != '0').collect();
+        final_result = String::new();
+        final_result.push(first);
+        final_result.push_str(&rest);
+    }
+
+    // Remove leading '0' if there are other characters
+    while final_result.len() > 1 && final_result.starts_with('0') {
+        final_result.remove(0);
+    }
+
+    final_result
+}
+
+/// Encode a string using the specified phonetic algorithm
+fn encode_phonetic(s: &str, algorithm: &compute::PhoneticAlgorithm) -> String {
+    match algorithm {
+        compute::PhoneticAlgorithm::Soundex => compute_soundex(s),
+        compute::PhoneticAlgorithm::RefinedSoundex => compute_refined_soundex(s),
+        compute::PhoneticAlgorithm::Metaphone => compute_metaphone(s),
+        compute::PhoneticAlgorithm::DoubleMetaphone => compute_double_metaphone(s, false),
+        compute::PhoneticAlgorithm::DoubleMetaphoneAlt => compute_double_metaphone(s, true),
+        compute::PhoneticAlgorithm::Nysiis => compute_nysiis(s),
+        compute::PhoneticAlgorithm::Cologne => compute_cologne(s),
+    }
 }
 
 /// Compute Damerau-Levenshtein distance (allows transpositions)
@@ -5947,6 +7082,41 @@ impl compute::Guest for Component {
         let result = arrow_arith::numeric::neg_wrapping(&arr_impl.inner)
             .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
         Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    // ========== Saturation Arithmetic ==========
+
+    fn add_saturating(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+        saturating_binary_op(&left_impl.inner, &right_impl.inner, |a, b| a.saturating_add(b))
+    }
+
+    fn sub_saturating(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+        saturating_binary_op(&left_impl.inner, &right_impl.inner, |a, b| a.saturating_sub(b))
+    }
+
+    fn mul_saturating(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+        saturating_binary_op(&left_impl.inner, &right_impl.inner, |a, b| a.saturating_mul(b))
+    }
+
+    fn add_scalar_saturating(arr: arrays::ArrayBorrow<'_>, scalar: i64) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        saturating_scalar_op(&arr_impl.inner, scalar, |a, b| a.saturating_add(b))
+    }
+
+    fn sub_scalar_saturating(arr: arrays::ArrayBorrow<'_>, scalar: i64) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        saturating_scalar_op(&arr_impl.inner, scalar, |a, b| a.saturating_sub(b))
+    }
+
+    fn mul_scalar_saturating(arr: arrays::ArrayBorrow<'_>, scalar: i64) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        saturating_scalar_op(&arr_impl.inner, scalar, |a, b| a.saturating_mul(b))
     }
 
     fn add_scalar_i64(arr: arrays::ArrayBorrow<'_>, scalar: i64) -> Result<arrays::Array, compute::ArrowError> {
@@ -7819,6 +8989,149 @@ impl compute::Guest for Component {
             .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
 
         Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(indices) }))
+    }
+
+    // ========== Advanced Sorting Operations ==========
+
+    fn sort_stable(arr: arrays::ArrayBorrow<'_>, descending: bool) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        // Get stable sort indices
+        let indices = sort_to_indices_stable_impl(&arr_impl.inner, descending)?;
+
+        // Take values at those indices
+        let result = arrow_select::take::take(&*arr_impl.inner, &indices, None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    fn sort_to_indices_stable(arr: arrays::ArrayBorrow<'_>, descending: bool) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let indices = sort_to_indices_stable_impl(&arr_impl.inner, descending)?;
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(indices) }))
+    }
+
+    fn lexsort_stable(columns: Vec<arrays::ArrayBorrow<'_>>, descending: Vec<bool>) -> Result<arrays::Array, compute::ArrowError> {
+        if columns.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("No columns provided".to_string()));
+        }
+        if columns.len() != descending.len() {
+            return Err(compute::ArrowError::InvalidArgument("columns and descending must have same length".to_string()));
+        }
+
+        // Use arrow_ord::sort::lexsort_to_indices which uses a stable sort
+        let sort_columns: Vec<arrow_ord::sort::SortColumn> = columns.iter()
+            .zip(descending.iter())
+            .map(|(col, &desc)| {
+                let col_impl = col.get::<ArrayImpl>();
+                arrow_ord::sort::SortColumn {
+                    values: col_impl.inner.clone(),
+                    options: Some(arrow_ord::sort::SortOptions {
+                        descending: desc,
+                        nulls_first: false,
+                    }),
+                }
+            })
+            .collect();
+
+        let indices = arrow_ord::sort::lexsort_to_indices(&sort_columns, None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(indices) }))
+    }
+
+    fn nth_element(arr: arrays::ArrayBorrow<'_>, n: u64) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let n = n as usize;
+
+        if n >= arr_impl.inner.len() {
+            return Err(compute::ArrowError::InvalidArgument(format!(
+                "n ({}) must be less than array length ({})", n, arr_impl.inner.len()
+            )));
+        }
+
+        // Get sort indices with limit of n+1 to find the nth element
+        let sort_opts = arrow_ord::sort::SortOptions {
+            descending: false,
+            nulls_first: false,
+        };
+
+        let indices = arrow_ord::sort::sort_to_indices(&*arr_impl.inner, Some(sort_opts), Some(n + 1))
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        // Get the nth index
+        let nth_idx = indices.value(n) as usize;
+
+        // Return single-element array with the nth value
+        let result = arr_impl.inner.slice(nth_idx, 1);
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    fn partition_nth(arr: arrays::ArrayBorrow<'_>, n: u64) -> Result<(arrays::Array, arrays::Array, arrays::Array), compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let n = n as usize;
+
+        if n >= arr_impl.inner.len() {
+            return Err(compute::ArrowError::InvalidArgument(format!(
+                "n ({}) must be less than array length ({})", n, arr_impl.inner.len()
+            )));
+        }
+
+        // Get full sort indices
+        let sort_opts = arrow_ord::sort::SortOptions {
+            descending: false,
+            nulls_first: false,
+        };
+
+        let indices = arrow_ord::sort::sort_to_indices(&*arr_impl.inner, Some(sort_opts), None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        // Partition into three parts
+        let less_indices: arrow_array::UInt32Array = (0..n as u32).map(|i| Some(indices.value(i as usize))).collect();
+        let nth_indices: arrow_array::UInt32Array = vec![Some(indices.value(n))].into_iter().collect();
+        let greater_indices: arrow_array::UInt32Array = ((n + 1)..arr_impl.inner.len())
+            .map(|i| Some(indices.value(i)))
+            .collect();
+
+        let less = arrow_select::take::take(&*arr_impl.inner, &less_indices, None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        let nth = arrow_select::take::take(&*arr_impl.inner, &nth_indices, None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        let greater = arrow_select::take::take(&*arr_impl.inner, &greater_indices, None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok((
+            arrays::Array::new(ArrayImpl { inner: less }),
+            arrays::Array::new(ArrayImpl { inner: nth }),
+            arrays::Array::new(ArrayImpl { inner: greater }),
+        ))
+    }
+
+    fn top_k_by(arr: arrays::ArrayBorrow<'_>, k: u64, descending: bool) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let k = k as usize;
+
+        if k == 0 {
+            // Return empty array of same type
+            return Ok(arrays::Array::new(ArrayImpl { inner: arr_impl.inner.slice(0, 0) }));
+        }
+
+        let k = k.min(arr_impl.inner.len());
+
+        let sort_opts = arrow_ord::sort::SortOptions {
+            descending,
+            nulls_first: false,
+        };
+
+        // Use sort_to_indices with limit for efficiency
+        let indices = arrow_ord::sort::sort_to_indices(&*arr_impl.inner, Some(sort_opts), Some(k))
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        let result = arrow_select::take::take(&*arr_impl.inner, &indices, None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
     }
 
     fn limit(arr: arrays::ArrayBorrow<'_>, n: u64) -> arrays::Array {
@@ -10065,6 +11378,104 @@ impl compute::Guest for Component {
         Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
     }
 
+    fn window_mean(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let len = arr_impl.inner.len();
+
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+        let (partitions, sort_indices) = compute_window_partitions_and_order(&partition_by, &order_by, &order_options)?;
+
+        let mut result: Vec<Option<f64>> = vec![None; len];
+
+        for (start, end) in partitions {
+            for i in start..end {
+                let current_pos = i - start;
+                let (frame_start, frame_end) = compute_frame_bounds(&frame, current_pos, start, end);
+
+                let mut sum = 0.0;
+                let mut count = 0u64;
+                for j in frame_start..frame_end {
+                    let idx = sort_indices[j];
+                    if let Some(v) = values[idx] {
+                        sum += v;
+                        count += 1;
+                    }
+                }
+                let original_idx = sort_indices[i];
+                result[original_idx] = if count > 0 { Some(sum / count as f64) } else { None };
+            }
+        }
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn window_variance(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let len = arr_impl.inner.len();
+
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+        let (partitions, sort_indices) = compute_window_partitions_and_order(&partition_by, &order_by, &order_options)?;
+
+        let mut result: Vec<Option<f64>> = vec![None; len];
+
+        for (start, end) in partitions {
+            for i in start..end {
+                let current_pos = i - start;
+                let (frame_start, frame_end) = compute_frame_bounds(&frame, current_pos, start, end);
+
+                // Collect frame values
+                let frame_values: Vec<f64> = (frame_start..frame_end)
+                    .filter_map(|j| values[sort_indices[j]])
+                    .collect();
+
+                let original_idx = sort_indices[i];
+                if frame_values.len() >= 2 {
+                    let n = frame_values.len() as f64;
+                    let mean = frame_values.iter().sum::<f64>() / n;
+                    let variance = frame_values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0);
+                    result[original_idx] = Some(variance);
+                }
+            }
+        }
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn window_stddev(arr: arrays::ArrayBorrow<'_>, partition_by: Vec<arrays::Array>, order_by: Vec<arrays::Array>, order_options: Vec<compute::SortOptions>, frame: Option<compute::WindowFrame>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let len = arr_impl.inner.len();
+
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+        let (partitions, sort_indices) = compute_window_partitions_and_order(&partition_by, &order_by, &order_options)?;
+
+        let mut result: Vec<Option<f64>> = vec![None; len];
+
+        for (start, end) in partitions {
+            for i in start..end {
+                let current_pos = i - start;
+                let (frame_start, frame_end) = compute_frame_bounds(&frame, current_pos, start, end);
+
+                // Collect frame values
+                let frame_values: Vec<f64> = (frame_start..frame_end)
+                    .filter_map(|j| values[sort_indices[j]])
+                    .collect();
+
+                let original_idx = sort_indices[i];
+                if frame_values.len() >= 2 {
+                    let n = frame_values.len() as f64;
+                    let mean = frame_values.iter().sum::<f64>() / n;
+                    let variance = frame_values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0);
+                    result[original_idx] = Some(variance.sqrt());
+                }
+            }
+        }
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
     // ========== Additional Aggregations ==========
 
     fn variance(arr: arrays::ArrayBorrow<'_>) -> Result<Option<f64>, compute::ArrowError> {
@@ -11772,6 +13183,89 @@ impl compute::Guest for Component {
         Err(compute::ArrowError::InvalidArgument("Expected integer array for ASCII codes".to_string()))
     }
 
+    // ========== Unicode Normalization & Case Conversion ==========
+
+    fn unicode_normalize(arr: arrays::ArrayBorrow<'_>, form: compute::UnicodeNormalization) -> Result<arrays::Array, compute::ArrowError> {
+        use unicode_normalization::UnicodeNormalization;
+
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let result: arrow_array::StringArray = str_arr.iter()
+                .map(|opt| opt.map(|s| {
+                    match form {
+                        compute::UnicodeNormalization::Nfd => s.nfd().collect::<String>(),
+                        compute::UnicodeNormalization::Nfc => s.nfc().collect::<String>(),
+                        compute::UnicodeNormalization::Nfkd => s.nfkd().collect::<String>(),
+                        compute::UnicodeNormalization::Nfkc => s.nfkc().collect::<String>(),
+                    }
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected String array".to_string()))
+    }
+
+    fn is_normalized(arr: arrays::ArrayBorrow<'_>, form: compute::UnicodeNormalization) -> Result<arrays::Array, compute::ArrowError> {
+        use unicode_normalization::is_nfc_quick;
+        use unicode_normalization::is_nfd_quick;
+        use unicode_normalization::is_nfkc_quick;
+        use unicode_normalization::is_nfkd_quick;
+        use unicode_normalization::IsNormalized;
+
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let result: arrow_array::BooleanArray = str_arr.iter()
+                .map(|opt| opt.map(|s| {
+                    match form {
+                        compute::UnicodeNormalization::Nfd => is_nfd_quick(s.chars()) == IsNormalized::Yes,
+                        compute::UnicodeNormalization::Nfc => is_nfc_quick(s.chars()) == IsNormalized::Yes,
+                        compute::UnicodeNormalization::Nfkd => is_nfkd_quick(s.chars()) == IsNormalized::Yes,
+                        compute::UnicodeNormalization::Nfkc => is_nfkc_quick(s.chars()) == IsNormalized::Yes,
+                    }
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected String array".to_string()))
+    }
+
+    fn remove_diacritics(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        use unicode_normalization::UnicodeNormalization;
+
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let result: arrow_array::StringArray = str_arr.iter()
+                .map(|opt| opt.map(|s| {
+                    // Decompose to NFD, then filter out combining characters (diacritics)
+                    s.nfd()
+                        .filter(|c| !unicode_normalization::char::is_combining_mark(*c))
+                        .collect::<String>()
+                }))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected String array".to_string()))
+    }
+
+    fn to_case(arr: arrays::ArrayBorrow<'_>, style: compute::CaseStyle) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let result: arrow_array::StringArray = str_arr.iter()
+                .map(|opt| opt.map(|s| convert_case(s, &style)))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected String array".to_string()))
+    }
+
     // ========== Array Generation ==========
 
     fn make_array_i64(start: i64, end: i64, step: i64) -> Result<arrays::Array, compute::ArrowError> {
@@ -13115,6 +14609,429 @@ impl compute::Guest for Component {
             .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
 
         Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    // ========== Multi-Aggregate GroupBy ==========
+
+    fn group_by_multi_agg(
+        batch: record_batch::RecordBatchBorrow<'_>,
+        group_columns: Vec<String>,
+        aggregations: Vec<compute::ColumnAggregation>,
+    ) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        use std::collections::HashMap;
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let schema = batch_impl.inner.schema();
+
+        if group_columns.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("At least one group column required".to_string()));
+        }
+
+        // Convert column names to indices
+        let group_col_indices: Vec<usize> = group_columns.iter().map(|name| {
+            schema.index_of(name)
+                .map_err(|e| compute::ArrowError::InvalidArgument(format!("Group column '{}' not found: {}", name, e)))
+        }).collect::<Result<Vec<_>, _>>()?;
+
+        // Parse aggregation function names and find column indices
+        let parsed_aggs: Vec<(usize, compute::AggFunction, String)> = aggregations.iter().map(|agg| {
+            let col_idx = schema.index_of(&agg.column)
+                .map_err(|e| compute::ArrowError::InvalidArgument(format!("Column '{}' not found: {}", agg.column, e)))?;
+
+            let func = parse_agg_function(&agg.function)?;
+
+            Ok((col_idx, func, agg.output_name.clone()))
+        }).collect::<Result<Vec<_>, compute::ArrowError>>()?;
+
+        // Build composite key for grouping
+        let num_rows = batch_impl.inner.num_rows();
+        let mut groups: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
+
+        for row in 0..num_rows {
+            let mut key = Vec::new();
+            for &col_idx in &group_col_indices {
+                let col = batch_impl.inner.column(col_idx);
+                let val = if col.is_null(row) {
+                    "NULL".to_string()
+                } else if let Some(str_arr) = col.as_any().downcast_ref::<arrow_array::StringArray>() {
+                    str_arr.value(row).to_string()
+                } else if let Some(int_arr) = col.as_any().downcast_ref::<arrow_array::Int64Array>() {
+                    int_arr.value(row).to_string()
+                } else if let Some(int_arr) = col.as_any().downcast_ref::<arrow_array::Int32Array>() {
+                    int_arr.value(row).to_string()
+                } else if let Some(float_arr) = col.as_any().downcast_ref::<arrow_array::Float64Array>() {
+                    float_arr.value(row).to_string()
+                } else if let Some(float_arr) = col.as_any().downcast_ref::<arrow_array::Float32Array>() {
+                    float_arr.value(row).to_string()
+                } else if let Some(bool_arr) = col.as_any().downcast_ref::<arrow_array::BooleanArray>() {
+                    bool_arr.value(row).to_string()
+                } else {
+                    format!("{:?}", row)
+                };
+                key.push(val);
+            }
+            groups.entry(key).or_default().push(row);
+        }
+
+        // Build result columns
+        let mut result_columns: Vec<Arc<dyn arrow_array::Array>> = Vec::new();
+        let mut result_fields: Vec<arrow_schema::Field> = Vec::new();
+
+        // Add group columns
+        for &col_idx in &group_col_indices {
+            let src_col = batch_impl.inner.column(col_idx);
+            let src_field = schema.field(col_idx);
+
+            let indices: Vec<u64> = groups.values().map(|rows| rows[0] as u64).collect();
+            let indices_arr = arrow_array::UInt64Array::from(indices);
+            let taken = arrow_select::take::take(src_col.as_ref(), &indices_arr, None)
+                .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+            result_columns.push(taken);
+            result_fields.push(src_field.clone());
+        }
+
+        // Add aggregate columns
+        for (col_idx, func, output_name) in &parsed_aggs {
+            let src_col = batch_impl.inner.column(*col_idx);
+
+            let values: Vec<Option<f64>> = groups.values().map(|rows| {
+                aggregate_values(src_col.as_ref(), rows, func)
+            }).collect();
+
+            let result_arr: arrow_array::Float64Array = values.into_iter().collect();
+            result_columns.push(Arc::new(result_arr));
+            result_fields.push(arrow_schema::Field::new(output_name, arrow_schema::DataType::Float64, true));
+        }
+
+        let schema = Arc::new(arrow_schema::Schema::new(result_fields));
+        let result = ArrowRecordBatch::try_new(schema, result_columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    // ========== Hierarchical Grouping (ROLLUP/CUBE) ==========
+
+    fn group_by_hierarchical(
+        batch: record_batch::RecordBatchBorrow<'_>,
+        group_columns: Vec<String>,
+        aggregations: Vec<compute::ColumnAggregation>,
+        mode: compute::GroupingMode,
+    ) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        use std::collections::HashMap;
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let schema = batch_impl.inner.schema();
+
+        if group_columns.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("At least one group column required".to_string()));
+        }
+
+        // Convert column names to indices
+        let group_col_indices: Vec<usize> = group_columns.iter().map(|name| {
+            schema.index_of(name)
+                .map_err(|e| compute::ArrowError::InvalidArgument(format!("Group column '{}' not found: {}", name, e)))
+        }).collect::<Result<Vec<_>, _>>()?;
+
+        // Parse aggregation function names
+        let parsed_aggs: Vec<(usize, compute::AggFunction, String)> = aggregations.iter().map(|agg| {
+            let col_idx = schema.index_of(&agg.column)
+                .map_err(|e| compute::ArrowError::InvalidArgument(format!("Column '{}' not found: {}", agg.column, e)))?;
+            let func = parse_agg_function(&agg.function)?;
+            Ok((col_idx, func, agg.output_name.clone()))
+        }).collect::<Result<Vec<_>, compute::ArrowError>>()?;
+
+        // Generate grouping levels based on mode
+        let num_cols = group_col_indices.len();
+        let grouping_levels: Vec<Vec<bool>> = match mode {
+            compute::GroupingMode::Standard => {
+                // Single level: all columns active
+                vec![vec![true; num_cols]]
+            }
+            compute::GroupingMode::Rollup => {
+                // ROLLUP: (A,B,C), (A,B,NULL), (A,NULL,NULL), (NULL,NULL,NULL)
+                (0..=num_cols).rev().map(|active_count| {
+                    (0..num_cols).map(|i| i < active_count).collect()
+                }).collect()
+            }
+            compute::GroupingMode::Cube => {
+                // CUBE: all 2^n combinations
+                (0..(1 << num_cols)).map(|mask| {
+                    (0..num_cols).map(|i| (mask & (1 << (num_cols - 1 - i))) != 0).collect()
+                }).collect()
+            }
+        };
+
+        // Collect all results
+        let mut all_group_values: Vec<Vec<Option<String>>> = Vec::new();
+        let mut all_agg_values: Vec<Vec<Option<f64>>> = Vec::new();
+        let mut all_grouping_ids: Vec<u64> = Vec::new();
+
+        let num_rows = batch_impl.inner.num_rows();
+
+        for level in &grouping_levels {
+            // Build grouping id for this level
+            let grouping_id: u64 = level.iter().enumerate()
+                .map(|(i, &active)| if !active { 1u64 << (num_cols - 1 - i) } else { 0 })
+                .sum();
+
+            // Build groups for this level (only using active columns)
+            let mut groups: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
+
+            for row in 0..num_rows {
+                let mut key = Vec::new();
+                for (i, &col_idx) in group_col_indices.iter().enumerate() {
+                    if level[i] {
+                        let col = batch_impl.inner.column(col_idx);
+                        let val = extract_string_value(col.as_ref(), row);
+                        key.push(val);
+                    } else {
+                        key.push("__SUBTOTAL__".to_string());
+                    }
+                }
+                groups.entry(key).or_default().push(row);
+            }
+
+            // Process each group
+            for (key, rows) in &groups {
+                // Build group column values
+                let group_vals: Vec<Option<String>> = key.iter().enumerate().map(|(i, v)| {
+                    if level[i] && v != "NULL" {
+                        Some(v.clone())
+                    } else if v == "__SUBTOTAL__" {
+                        None // Subtotal row
+                    } else if v == "NULL" {
+                        None // Actual null in data
+                    } else {
+                        Some(v.clone())
+                    }
+                }).collect();
+
+                // Compute aggregates
+                let agg_vals: Vec<Option<f64>> = parsed_aggs.iter().map(|(col_idx, func, _)| {
+                    let src_col = batch_impl.inner.column(*col_idx);
+                    aggregate_values(src_col.as_ref(), rows, func)
+                }).collect();
+
+                all_group_values.push(group_vals);
+                all_agg_values.push(agg_vals);
+                all_grouping_ids.push(grouping_id);
+            }
+        }
+
+        // Build result columns
+        let mut result_columns: Vec<Arc<dyn arrow_array::Array>> = Vec::new();
+        let mut result_fields: Vec<arrow_schema::Field> = Vec::new();
+
+        // Add group columns (as strings for simplicity with nulls)
+        for (i, col_idx) in group_col_indices.iter().enumerate() {
+            let field = schema.field(*col_idx);
+            let values: Vec<Option<&str>> = all_group_values.iter()
+                .map(|row| row[i].as_deref())
+                .collect();
+            let arr = arrow_array::StringArray::from(values);
+            result_columns.push(Arc::new(arr));
+            result_fields.push(arrow_schema::Field::new(field.name(), arrow_schema::DataType::Utf8, true));
+        }
+
+        // Add aggregate columns
+        for (i, (_, _, output_name)) in parsed_aggs.iter().enumerate() {
+            let values: Vec<Option<f64>> = all_agg_values.iter()
+                .map(|row| row[i])
+                .collect();
+            let arr: arrow_array::Float64Array = values.into_iter().collect();
+            result_columns.push(Arc::new(arr));
+            result_fields.push(arrow_schema::Field::new(output_name, arrow_schema::DataType::Float64, true));
+        }
+
+        // Add grouping_id column
+        let grouping_id_arr = arrow_array::UInt64Array::from(all_grouping_ids);
+        result_columns.push(Arc::new(grouping_id_arr));
+        result_fields.push(arrow_schema::Field::new("grouping_id", arrow_schema::DataType::UInt64, false));
+
+        let result_schema = Arc::new(arrow_schema::Schema::new(result_fields));
+        let result = ArrowRecordBatch::try_new(result_schema, result_columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn grouping_id(
+        batch: record_batch::RecordBatchBorrow<'_>,
+        _group_columns: Vec<String>,
+    ) -> Result<arrays::Array, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let schema = batch_impl.inner.schema();
+
+        // Check if grouping_id column exists
+        if let Ok(idx) = schema.index_of("grouping_id") {
+            let col = batch_impl.inner.column(idx);
+            return Ok(arrays::Array::new(ArrayImpl { inner: col.clone() }));
+        }
+
+        // If no grouping_id column, generate zeros (standard grouping)
+        let num_rows = batch_impl.inner.num_rows();
+        let zeros: Vec<u64> = vec![0; num_rows];
+        let arr = arrow_array::UInt64Array::from(zeros);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(arr) }))
+    }
+
+    // ========== Bucketing & Histogram Grouping ==========
+
+    fn bucketize(arr: arrays::ArrayBorrow<'_>, boundaries: Vec<f64>) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        // Extract numeric values
+        let values = extract_f64_values(&arr_impl.inner)?;
+
+        // Assign each value to a bucket using binary search
+        let bucket_indices: Vec<Option<u32>> = values.iter().map(|opt| {
+            opt.map(|v| {
+                // Find the bucket: binary search for first boundary >= value
+                match boundaries.binary_search_by(|b| b.partial_cmp(&v).unwrap_or(std::cmp::Ordering::Less)) {
+                    Ok(idx) => idx as u32, // Value equals boundary
+                    Err(idx) => idx as u32, // Value between boundaries
+                }
+            })
+        }).collect();
+
+        let result = arrow_array::UInt32Array::from(bucket_indices);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn bucketize_equal_width(arr: arrays::ArrayBorrow<'_>, num_buckets: u32) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if num_buckets == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Number of buckets must be > 0".to_string()));
+        }
+
+        let values = extract_f64_values(&arr_impl.inner)?;
+
+        // Find min and max
+        let (min_val, max_val) = values.iter()
+            .filter_map(|v| *v)
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), v| {
+                (min.min(v), max.max(v))
+            });
+
+        if min_val.is_infinite() || max_val.is_infinite() {
+            // All nulls
+            let nulls: Vec<Option<u32>> = vec![None; values.len()];
+            let result = arrow_array::UInt32Array::from(nulls);
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        let width = (max_val - min_val) / num_buckets as f64;
+
+        let bucket_indices: Vec<Option<u32>> = values.iter().map(|opt| {
+            opt.map(|v| {
+                if width == 0.0 {
+                    0
+                } else {
+                    let bucket = ((v - min_val) / width) as u32;
+                    bucket.min(num_buckets - 1) // Clamp to last bucket
+                }
+            })
+        }).collect();
+
+        let result = arrow_array::UInt32Array::from(bucket_indices);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn bucketize_equal_freq(arr: arrays::ArrayBorrow<'_>, num_buckets: u32) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if num_buckets == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Number of buckets must be > 0".to_string()));
+        }
+
+        let values = extract_f64_values(&arr_impl.inner)?;
+
+        // Collect non-null values with indices
+        let mut indexed_values: Vec<(usize, f64)> = values.iter().enumerate()
+            .filter_map(|(i, opt)| opt.map(|v| (i, v)))
+            .collect();
+
+        if indexed_values.is_empty() {
+            let nulls: Vec<Option<u32>> = vec![None; values.len()];
+            let result = arrow_array::UInt32Array::from(nulls);
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        // Sort by value
+        indexed_values.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Assign buckets based on rank
+        let n = indexed_values.len();
+        let bucket_size = (n as f64 / num_buckets as f64).ceil() as usize;
+
+        let mut bucket_assignments = vec![None; values.len()];
+        for (rank, (original_idx, _)) in indexed_values.into_iter().enumerate() {
+            let bucket = (rank / bucket_size.max(1)) as u32;
+            bucket_assignments[original_idx] = Some(bucket.min(num_buckets - 1));
+        }
+
+        let result = arrow_array::UInt32Array::from(bucket_assignments);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn histogram_with_boundaries(arr: arrays::ArrayBorrow<'_>, boundaries: Vec<f64>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        let values = extract_f64_values(&arr_impl.inner)?;
+
+        // Count values in each bucket
+        let num_buckets = boundaries.len() + 1;
+        let mut counts = vec![0u64; num_buckets];
+
+        for opt in &values {
+            if let Some(v) = opt {
+                let bucket = match boundaries.binary_search_by(|b| b.partial_cmp(v).unwrap_or(std::cmp::Ordering::Less)) {
+                    Ok(idx) => idx,
+                    Err(idx) => idx,
+                };
+                counts[bucket] += 1;
+            }
+        }
+
+        // Build result batch
+        let mut bucket_starts: Vec<Option<f64>> = Vec::with_capacity(num_buckets);
+        let mut bucket_ends: Vec<Option<f64>> = Vec::with_capacity(num_buckets);
+
+        for i in 0..num_buckets {
+            if i == 0 {
+                bucket_starts.push(None); // -infinity
+            } else {
+                bucket_starts.push(Some(boundaries[i - 1]));
+            }
+
+            if i == num_buckets - 1 {
+                bucket_ends.push(None); // +infinity
+            } else {
+                bucket_ends.push(Some(boundaries[i]));
+            }
+        }
+
+        let start_arr: arrow_array::Float64Array = bucket_starts.into_iter().collect();
+        let end_arr: arrow_array::Float64Array = bucket_ends.into_iter().collect();
+        let count_arr = arrow_array::UInt64Array::from(counts);
+
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("bucket_start", arrow_schema::DataType::Float64, true),
+            arrow_schema::Field::new("bucket_end", arrow_schema::DataType::Float64, true),
+            arrow_schema::Field::new("count", arrow_schema::DataType::UInt64, false),
+        ]));
+
+        let batch = ArrowRecordBatch::try_new(schema, vec![
+            Arc::new(start_arr),
+            Arc::new(end_arr),
+            Arc::new(count_arr),
+        ]).map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: batch }))
     }
 
     // ========== Join Operations ==========
@@ -16000,6 +17917,48 @@ impl compute::Guest for Component {
         Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
     }
 
+    // ========== Advanced Phonetic Algorithms ==========
+
+    fn phonetic_encode(arr: arrays::ArrayBorrow<'_>, algorithm: compute::PhoneticAlgorithm) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("phonetic_encode requires string array".to_string()))?;
+
+        let result: arrow_array::StringArray = str_arr.iter()
+            .map(|opt| opt.map(|s| encode_phonetic(s, &algorithm)))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn phonetic_match(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>, algorithm: compute::PhoneticAlgorithm) -> Result<arrays::Array, compute::ArrowError> {
+        use arrow_array::Array as ArrowArrayTrait;
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        let left_arr = left_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("phonetic_match requires string arrays".to_string()))?;
+        let right_arr = right_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("phonetic_match requires string arrays".to_string()))?;
+
+        if left_arr.len() != right_arr.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have the same length".to_string()));
+        }
+
+        let result: arrow_array::BooleanArray = left_arr.iter().zip(right_arr.iter())
+            .map(|(l, r)| match (l, r) {
+                (Some(l), Some(r)) => {
+                    let l_code = encode_phonetic(l, &algorithm);
+                    let r_code = encode_phonetic(r, &algorithm);
+                    Some(l_code == r_code)
+                },
+                _ => None,
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
     fn hamming(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
         use arrow_array::Array as ArrowArrayTrait;
         let left_impl = left.get::<ArrayImpl>();
@@ -16325,6 +18284,68 @@ fn to_parquet_compression(comp: io::Compression) -> Result<ParquetCompression, i
     }
 }
 
+/// Convert Parquet statistics bytes to string representation based on physical type
+fn stats_value_to_string(bytes: Option<&[u8]>, physical_type: parquet::basic::Type) -> Option<String> {
+    use parquet::basic::Type;
+
+    let bytes = bytes?;
+
+    match physical_type {
+        Type::BOOLEAN => {
+            if !bytes.is_empty() {
+                Some(if bytes[0] == 0 { "false" } else { "true" }.to_string())
+            } else {
+                None
+            }
+        }
+        Type::INT32 => {
+            if bytes.len() >= 4 {
+                let value = i32::from_le_bytes(bytes[..4].try_into().ok()?);
+                Some(value.to_string())
+            } else {
+                None
+            }
+        }
+        Type::INT64 => {
+            if bytes.len() >= 8 {
+                let value = i64::from_le_bytes(bytes[..8].try_into().ok()?);
+                Some(value.to_string())
+            } else {
+                None
+            }
+        }
+        Type::INT96 => {
+            // INT96 is 12 bytes, often used for timestamps
+            Some(format!("INT96({} bytes)", bytes.len()))
+        }
+        Type::FLOAT => {
+            if bytes.len() >= 4 {
+                let value = f32::from_le_bytes(bytes[..4].try_into().ok()?);
+                Some(value.to_string())
+            } else {
+                None
+            }
+        }
+        Type::DOUBLE => {
+            if bytes.len() >= 8 {
+                let value = f64::from_le_bytes(bytes[..8].try_into().ok()?);
+                Some(value.to_string())
+            } else {
+                None
+            }
+        }
+        Type::BYTE_ARRAY | Type::FIXED_LEN_BYTE_ARRAY => {
+            // Try to interpret as UTF-8 string, otherwise show as hex
+            if let Ok(s) = std::str::from_utf8(bytes) {
+                Some(s.to_string())
+            } else {
+                // Show as hex for non-UTF8 binary data
+                Some(format!("0x{}", bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()))
+            }
+        }
+    }
+}
+
 /// Apply row filters to a record batch
 fn apply_row_filters(batch: &ArrowRecordBatch, filters: &[io::ParquetRowFilter]) -> Result<ArrowRecordBatch, io::ArrowError> {
     use arrow_array::Array as ArrowArrayTrait;
@@ -16592,6 +18613,176 @@ impl io::Guest for Component {
             min_value: statistics.and_then(|s| s.min_bytes_opt().map(|b| b.to_vec())),
             max_value: statistics.and_then(|s| s.max_bytes_opt().map(|b| b.to_vec())),
         })
+    }
+
+    fn parquet_read_metadata_only(data: Vec<u8>) -> Result<io::ParquetFileMetadata, io::ArrowError> {
+        let bytes = Bytes::from(data);
+        let builder = ParquetRecordBatchReaderBuilder::try_new(bytes).map_err(to_io_error)?;
+        let metadata = builder.metadata();
+
+        Ok(io::ParquetFileMetadata {
+            num_rows: metadata.file_metadata().num_rows() as u64,
+            num_row_groups: metadata.num_row_groups() as u32,
+            created_by: metadata.file_metadata().created_by().map(|s| s.to_string()),
+            key_value_metadata: metadata
+                .file_metadata()
+                .key_value_metadata()
+                .map(|kv| {
+                    kv.iter()
+                        .filter_map(|e| {
+                            e.value.as_ref().map(|v| (e.key.clone(), v.clone()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+    }
+
+    fn parquet_get_column_chunk_stats(data: Vec<u8>, row_group: u32, column: String) -> Result<io::ParquetColumnChunkStats, io::ArrowError> {
+        let bytes = Bytes::from(data);
+        let builder = ParquetRecordBatchReaderBuilder::try_new(bytes).map_err(to_io_error)?;
+        let metadata = builder.metadata();
+
+        let row_group_idx = row_group as usize;
+        if row_group_idx >= metadata.num_row_groups() {
+            return Err(io::ArrowError::InvalidArgument(format!(
+                "Row group {} does not exist (file has {} row groups)",
+                row_group, metadata.num_row_groups()
+            )));
+        }
+
+        let rg_metadata = metadata.row_group(row_group_idx);
+        let schema_descr = metadata.file_metadata().schema_descr();
+
+        // Find column by name
+        let mut col_idx = None;
+        for i in 0..rg_metadata.num_columns() {
+            let col_descr = schema_descr.column(i);
+            if col_descr.name() == column {
+                col_idx = Some(i);
+                break;
+            }
+        }
+
+        let col_idx = col_idx.ok_or_else(|| {
+            io::ArrowError::InvalidArgument(format!(
+                "Column '{}' not found in row group {}",
+                column, row_group
+            ))
+        })?;
+
+        let col_metadata = rg_metadata.column(col_idx);
+        let col_descr = schema_descr.column(col_idx);
+        let statistics = col_metadata.statistics();
+
+        // Convert statistics min/max to string representation
+        let (min_str, max_str) = if let Some(stats) = statistics {
+            (
+                stats_value_to_string(stats.min_bytes_opt(), col_descr.physical_type()),
+                stats_value_to_string(stats.max_bytes_opt(), col_descr.physical_type()),
+            )
+        } else {
+            (None, None)
+        };
+
+        Ok(io::ParquetColumnChunkStats {
+            column: column.clone(),
+            physical_type: format!("{:?}", col_descr.physical_type()),
+            num_values: col_metadata.num_values(),
+            null_count: statistics.and_then(|s| s.null_count_opt()).map(|c| c as i64),
+            distinct_count: statistics.and_then(|s| s.distinct_count_opt()).map(|c| c as i64),
+            min_value: min_str,
+            max_value: max_str,
+            compressed_size: col_metadata.compressed_size(),
+            uncompressed_size: col_metadata.uncompressed_size(),
+        })
+    }
+
+    fn parquet_row_group_stats(data: Vec<u8>, row_group: u32) -> Result<Vec<io::ParquetColumnChunkStats>, io::ArrowError> {
+        let bytes = Bytes::from(data);
+        let builder = ParquetRecordBatchReaderBuilder::try_new(bytes).map_err(to_io_error)?;
+        let metadata = builder.metadata();
+
+        let row_group_idx = row_group as usize;
+        if row_group_idx >= metadata.num_row_groups() {
+            return Err(io::ArrowError::InvalidArgument(format!(
+                "Row group {} does not exist (file has {} row groups)",
+                row_group, metadata.num_row_groups()
+            )));
+        }
+
+        let rg_metadata = metadata.row_group(row_group_idx);
+        let schema_descr = metadata.file_metadata().schema_descr();
+        let mut results = Vec::new();
+
+        for i in 0..rg_metadata.num_columns() {
+            let col_metadata = rg_metadata.column(i);
+            let col_descr = schema_descr.column(i);
+            let statistics = col_metadata.statistics();
+
+            // Convert statistics min/max to string representation
+            let (min_str, max_str) = if let Some(stats) = statistics {
+                (
+                    stats_value_to_string(stats.min_bytes_opt(), col_descr.physical_type()),
+                    stats_value_to_string(stats.max_bytes_opt(), col_descr.physical_type()),
+                )
+            } else {
+                (None, None)
+            };
+
+            results.push(io::ParquetColumnChunkStats {
+                column: col_descr.name().to_string(),
+                physical_type: format!("{:?}", col_descr.physical_type()),
+                num_values: col_metadata.num_values(),
+                null_count: statistics.and_then(|s| s.null_count_opt()).map(|c| c as i64),
+                distinct_count: statistics.and_then(|s| s.distinct_count_opt()).map(|c| c as i64),
+                min_value: min_str,
+                max_value: max_str,
+                compressed_size: col_metadata.compressed_size(),
+                uncompressed_size: col_metadata.uncompressed_size(),
+            });
+        }
+
+        Ok(results)
+    }
+
+    fn parquet_has_dictionary(data: Vec<u8>, row_group: u32, column: String) -> Result<bool, io::ArrowError> {
+        let bytes = Bytes::from(data);
+        let builder = ParquetRecordBatchReaderBuilder::try_new(bytes).map_err(to_io_error)?;
+        let metadata = builder.metadata();
+
+        let row_group_idx = row_group as usize;
+        if row_group_idx >= metadata.num_row_groups() {
+            return Err(io::ArrowError::InvalidArgument(format!(
+                "Row group {} does not exist (file has {} row groups)",
+                row_group, metadata.num_row_groups()
+            )));
+        }
+
+        let rg_metadata = metadata.row_group(row_group_idx);
+        let schema_descr = metadata.file_metadata().schema_descr();
+
+        // Find column by name
+        let mut col_idx = None;
+        for i in 0..rg_metadata.num_columns() {
+            let col_descr = schema_descr.column(i);
+            if col_descr.name() == column {
+                col_idx = Some(i);
+                break;
+            }
+        }
+
+        let col_idx = col_idx.ok_or_else(|| {
+            io::ArrowError::InvalidArgument(format!(
+                "Column '{}' not found in row group {}",
+                column, row_group
+            ))
+        })?;
+
+        let col_metadata = rg_metadata.column(col_idx);
+
+        // Check if dictionary page offset is set (indicates dictionary encoding)
+        Ok(col_metadata.dictionary_page_offset().is_some())
     }
 
     fn parquet_read(data: Vec<u8>) -> Result<Vec<record_batch::RecordBatch>, io::ArrowError> {

@@ -183,6 +183,35 @@ interface types {
     /// Merge multiple schemas into one (union of all fields)
     schema-merge: func(schemas: list<schema>) -> result<schema, arrow-error>;
 
+    /// ========== Schema Utilities ==========
+
+    /// Schema difference information
+    record schema-diff-result {
+        /// Fields only in left schema
+        left-only: list<string>,
+        /// Fields only in right schema
+        right-only: list<string>,
+        /// Fields with different types (name, left-type, right-type)
+        type-mismatches: list<tuple<string, string, string>>,
+        /// Fields with different nullability
+        nullability-mismatches: list<string>,
+    }
+
+    /// Compare two schemas and return differences
+    compare-schemas: func(left: borrow<schema>, right: borrow<schema>) -> schema-diff-result;
+
+    /// Check if schemas are compatible (left can be cast to right)
+    schemas-compatible: func(left: borrow<schema>, right: borrow<schema>) -> bool;
+
+    /// Merge two schemas (union of fields, allowing different types for same name to coexist)
+    schema-merge-two: func(left: borrow<schema>, right: borrow<schema>) -> result<schema, arrow-error>;
+
+    /// Project schema to subset of fields
+    schema-project: func(schema: borrow<schema>, fields: list<string>) -> result<schema, arrow-error>;
+
+    /// Rename fields in schema
+    schema-rename: func(schema: borrow<schema>, old-names: list<string>, new-names: list<string>) -> result<schema, arrow-error>;
+
     /// Error type for Arrow operations
     variant arrow-error {
         /// Invalid argument provided

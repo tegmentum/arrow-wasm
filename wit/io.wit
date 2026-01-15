@@ -172,6 +172,49 @@ interface io {
     /// Get statistics for a specific column in a row group
     parquet-get-column-statistics: func(data: list<u8>, row-group: u32, column: u32) -> result<parquet-column-statistics, arrow-error>;
 
+    /// ========== Enhanced Parquet Metadata ==========
+
+    /// Column chunk statistics with more detail
+    record parquet-column-chunk-stats {
+        /// Column name
+        column: string,
+        /// Physical type
+        physical-type: string,
+        /// Number of values
+        num-values: s64,
+        /// Null count
+        null-count: option<s64>,
+        /// Distinct count (if available)
+        distinct-count: option<s64>,
+        /// Min value (as string representation)
+        min-value: option<string>,
+        /// Max value (as string representation)
+        max-value: option<string>,
+        /// Compressed size in bytes
+        compressed-size: s64,
+        /// Uncompressed size in bytes
+        uncompressed-size: s64,
+    }
+
+    /// Read Parquet metadata only (no data pages)
+    parquet-read-metadata-only: func(data: list<u8>) -> result<parquet-file-metadata, arrow-error>;
+
+    /// Get column chunk statistics for a row group by column name
+    parquet-get-column-chunk-stats: func(
+        data: list<u8>,
+        row-group: u32,
+        column: string
+    ) -> result<parquet-column-chunk-stats, arrow-error>;
+
+    /// Get all column statistics for a row group
+    parquet-row-group-stats: func(
+        data: list<u8>,
+        row-group: u32
+    ) -> result<list<parquet-column-chunk-stats>, arrow-error>;
+
+    /// Check if column uses dictionary encoding
+    parquet-has-dictionary: func(data: list<u8>, row-group: u32, column: string) -> result<bool, arrow-error>;
+
     /// ========== Advanced Parquet Read Options ==========
 
     /// Comparison operator for row filters
