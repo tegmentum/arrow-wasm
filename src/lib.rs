@@ -26210,6 +26210,1092 @@ impl compute::Guest for Component {
 
         Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: concat_result }))
     }
+
+    // ========================================================================
+    // Phase 22.1: String Similarity Functions
+    // ========================================================================
+
+    fn levenshtein_distance(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_strings = extract_string_values(&left.get::<ArrayImpl>().inner)?;
+        let right_strings = extract_string_values(&right.get::<ArrayImpl>().inner)?;
+
+        if left_strings.len() != right_strings.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let result: arrow_array::Int64Array = left_strings.iter().zip(right_strings.iter())
+            .map(|(l, r)| {
+                match (l, r) {
+                    (Some(s1), Some(s2)) => Some(compute_levenshtein(s1, s2) as i64),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn levenshtein_similarity(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_strings = extract_string_values(&left.get::<ArrayImpl>().inner)?;
+        let right_strings = extract_string_values(&right.get::<ArrayImpl>().inner)?;
+
+        if left_strings.len() != right_strings.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = left_strings.iter().zip(right_strings.iter())
+            .map(|(l, r)| {
+                match (l, r) {
+                    (Some(s1), Some(s2)) => {
+                        let dist = compute_levenshtein(s1, s2);
+                        let max_len = s1.len().max(s2.len());
+                        if max_len == 0 {
+                            Some(1.0)
+                        } else {
+                            Some(1.0 - (dist as f64 / max_len as f64))
+                        }
+                    },
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn jaro_similarity(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_strings = extract_string_values(&left.get::<ArrayImpl>().inner)?;
+        let right_strings = extract_string_values(&right.get::<ArrayImpl>().inner)?;
+
+        if left_strings.len() != right_strings.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = left_strings.iter().zip(right_strings.iter())
+            .map(|(l, r)| {
+                match (l, r) {
+                    (Some(s1), Some(s2)) => Some(compute_jaro(s1, s2)),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn jaro_winkler_similarity(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_strings = extract_string_values(&left.get::<ArrayImpl>().inner)?;
+        let right_strings = extract_string_values(&right.get::<ArrayImpl>().inner)?;
+
+        if left_strings.len() != right_strings.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = left_strings.iter().zip(right_strings.iter())
+            .map(|(l, r)| {
+                match (l, r) {
+                    (Some(s1), Some(s2)) => Some(compute_jaro_winkler(s1, s2)),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn hamming_distance(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_strings = extract_string_values(&left.get::<ArrayImpl>().inner)?;
+        let right_strings = extract_string_values(&right.get::<ArrayImpl>().inner)?;
+
+        if left_strings.len() != right_strings.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let result: arrow_array::Int64Array = left_strings.iter().zip(right_strings.iter())
+            .map(|(l, r)| {
+                match (l, r) {
+                    (Some(s1), Some(s2)) => {
+                        if s1.len() != s2.len() {
+                            None // Hamming requires equal length
+                        } else {
+                            let dist = s1.chars().zip(s2.chars())
+                                .filter(|(a, b)| a != b)
+                                .count();
+                            Some(dist as i64)
+                        }
+                    },
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn dice_coefficient(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_strings = extract_string_values(&left.get::<ArrayImpl>().inner)?;
+        let right_strings = extract_string_values(&right.get::<ArrayImpl>().inner)?;
+
+        if left_strings.len() != right_strings.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = left_strings.iter().zip(right_strings.iter())
+            .map(|(l, r)| {
+                match (l, r) {
+                    (Some(s1), Some(s2)) => Some(compute_dice(s1, s2)),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn within_edit_distance(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>, max_distance: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let left_strings = extract_string_values(&left.get::<ArrayImpl>().inner)?;
+        let right_strings = extract_string_values(&right.get::<ArrayImpl>().inner)?;
+
+        if left_strings.len() != right_strings.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let result: arrow_array::BooleanArray = left_strings.iter().zip(right_strings.iter())
+            .map(|(l, r)| {
+                match (l, r) {
+                    (Some(s1), Some(s2)) => Some(compute_levenshtein(s1, s2) <= max_distance as usize),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 22.2: Data Validation
+    // ========================================================================
+
+    fn is_in_set(arr: arrays::ArrayBorrow<'_>, allowed: Vec<String>) -> Result<arrays::Array, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+        let allowed_set: std::collections::HashSet<&str> = allowed.iter().map(|s| s.as_str()).collect();
+
+        let result: arrow_array::BooleanArray = strings.iter()
+            .map(|opt| opt.as_ref().map(|s| allowed_set.contains(s.as_str())))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn is_in_range(arr: arrays::ArrayBorrow<'_>, min_val: f64, max_val: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::BooleanArray = values.iter()
+            .map(|opt| opt.map(|v| v >= min_val && v <= max_val))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn matches_pattern(arr: arrays::ArrayBorrow<'_>, pattern: String) -> Result<arrays::Array, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+        let regex = regex::Regex::new(&pattern)
+            .map_err(|e| compute::ArrowError::InvalidArgument(format!("Invalid regex: {}", e)))?;
+
+        let result: arrow_array::BooleanArray = strings.iter()
+            .map(|opt| opt.as_ref().map(|s| regex.is_match(s)))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn is_valid_email(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+        // Simplified email regex
+        let regex = regex::Regex::new(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        let result: arrow_array::BooleanArray = strings.iter()
+            .map(|opt| opt.as_ref().map(|s| regex.is_match(s)))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn is_valid_url(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+        // Simplified URL regex
+        let regex = regex::Regex::new(r"^https?://[a-zA-Z0-9.-]+(?:/[^\s]*)?$")
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        let result: arrow_array::BooleanArray = strings.iter()
+            .map(|opt| opt.as_ref().map(|s| regex.is_match(s)))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn is_valid_uuid(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+        // UUID regex (8-4-4-4-12 hex format)
+        let regex = regex::Regex::new(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        let result: arrow_array::BooleanArray = strings.iter()
+            .map(|opt| opt.as_ref().map(|s| regex.is_match(s)))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // is_valid_json already implemented in Phase 17
+
+    fn all_unique(arr: arrays::ArrayBorrow<'_>) -> Result<bool, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+        for opt in &values {
+            if let Some(v) = opt {
+                let bits = v.to_bits();
+                if seen.contains(&bits) {
+                    return Ok(false);
+                }
+                seen.insert(bits);
+            }
+        }
+
+        Ok(true)
+    }
+
+    // ========================================================================
+    // Phase 22.3: Bit Manipulation
+    // ========================================================================
+
+    fn bit_count(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(int_arr) = inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let result: arrow_array::Int64Array = int_arr.iter()
+                .map(|opt| opt.map(|v| v.count_ones() as i64))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(int_arr) = inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            let result: arrow_array::Int32Array = int_arr.iter()
+                .map(|opt| opt.map(|v| v.count_ones() as i32))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Expected integer array".to_string()))
+        }
+    }
+
+    fn bit_get(arr: arrays::ArrayBorrow<'_>, position: u8) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(int_arr) = inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let result: arrow_array::BooleanArray = int_arr.iter()
+                .map(|opt| opt.map(|v| (v >> position) & 1 == 1))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(int_arr) = inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            let result: arrow_array::BooleanArray = int_arr.iter()
+                .map(|opt| opt.map(|v| (v >> position) & 1 == 1))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Expected integer array".to_string()))
+        }
+    }
+
+    fn bit_set(arr: arrays::ArrayBorrow<'_>, position: u8) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(int_arr) = inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let result: arrow_array::Int64Array = int_arr.iter()
+                .map(|opt| opt.map(|v| v | (1i64 << position)))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(int_arr) = inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            let result: arrow_array::Int32Array = int_arr.iter()
+                .map(|opt| opt.map(|v| v | (1i32 << position)))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Expected integer array".to_string()))
+        }
+    }
+
+    fn bit_clear(arr: arrays::ArrayBorrow<'_>, position: u8) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(int_arr) = inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let result: arrow_array::Int64Array = int_arr.iter()
+                .map(|opt| opt.map(|v| v & !(1i64 << position)))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(int_arr) = inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            let result: arrow_array::Int32Array = int_arr.iter()
+                .map(|opt| opt.map(|v| v & !(1i32 << position)))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Expected integer array".to_string()))
+        }
+    }
+
+    fn bit_toggle(arr: arrays::ArrayBorrow<'_>, position: u8) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(int_arr) = inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let result: arrow_array::Int64Array = int_arr.iter()
+                .map(|opt| opt.map(|v| v ^ (1i64 << position)))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(int_arr) = inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            let result: arrow_array::Int32Array = int_arr.iter()
+                .map(|opt| opt.map(|v| v ^ (1i32 << position)))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Expected integer array".to_string()))
+        }
+    }
+
+    // bit_reverse, leading_zeros, trailing_zeros already implemented in Phase 17
+
+    // ========================================================================
+    // Phase 22.4: Sliding Window Statistics
+    // ========================================================================
+
+    fn rolling_variance(arr: arrays::ArrayBorrow<'_>, window: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let window = window as usize;
+
+        if window == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Window size must be > 0".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = (0..values.len())
+            .map(|i| {
+                if i + 1 < window {
+                    return None;
+                }
+                let start = i + 1 - window;
+                let window_vals: Vec<f64> = values[start..=i].iter().filter_map(|v| *v).collect();
+                if window_vals.len() < 2 {
+                    return None;
+                }
+                let mean = window_vals.iter().sum::<f64>() / window_vals.len() as f64;
+                let variance = window_vals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (window_vals.len() - 1) as f64;
+                Some(variance)
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn rolling_stddev(arr: arrays::ArrayBorrow<'_>, window: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let window = window as usize;
+
+        if window == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Window size must be > 0".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = (0..values.len())
+            .map(|i| {
+                if i + 1 < window {
+                    return None;
+                }
+                let start = i + 1 - window;
+                let window_vals: Vec<f64> = values[start..=i].iter().filter_map(|v| *v).collect();
+                if window_vals.len() < 2 {
+                    return None;
+                }
+                let mean = window_vals.iter().sum::<f64>() / window_vals.len() as f64;
+                let variance = window_vals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (window_vals.len() - 1) as f64;
+                Some(variance.sqrt())
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn rolling_skewness(arr: arrays::ArrayBorrow<'_>, window: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let window = window as usize;
+
+        if window == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Window size must be > 0".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = (0..values.len())
+            .map(|i| {
+                if i + 1 < window {
+                    return None;
+                }
+                let start = i + 1 - window;
+                let window_vals: Vec<f64> = values[start..=i].iter().filter_map(|v| *v).collect();
+                if window_vals.len() < 3 {
+                    return None;
+                }
+                let n = window_vals.len() as f64;
+                let mean = window_vals.iter().sum::<f64>() / n;
+                let m2 = window_vals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
+                let m3 = window_vals.iter().map(|x| (x - mean).powi(3)).sum::<f64>() / n;
+                if m2 == 0.0 {
+                    return None;
+                }
+                Some(m3 / m2.powf(1.5))
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn rolling_kurtosis(arr: arrays::ArrayBorrow<'_>, window: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let window = window as usize;
+
+        if window == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Window size must be > 0".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = (0..values.len())
+            .map(|i| {
+                if i + 1 < window {
+                    return None;
+                }
+                let start = i + 1 - window;
+                let window_vals: Vec<f64> = values[start..=i].iter().filter_map(|v| *v).collect();
+                if window_vals.len() < 4 {
+                    return None;
+                }
+                let n = window_vals.len() as f64;
+                let mean = window_vals.iter().sum::<f64>() / n;
+                let m2 = window_vals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
+                let m4 = window_vals.iter().map(|x| (x - mean).powi(4)).sum::<f64>() / n;
+                if m2 == 0.0 {
+                    return None;
+                }
+                Some(m4 / m2.powi(2) - 3.0) // Excess kurtosis
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn rolling_quantile(arr: arrays::ArrayBorrow<'_>, window: u32, quantile: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let window = window as usize;
+
+        if window == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Window size must be > 0".to_string()));
+        }
+        if !(0.0..=1.0).contains(&quantile) {
+            return Err(compute::ArrowError::InvalidArgument("Quantile must be between 0 and 1".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = (0..values.len())
+            .map(|i| {
+                if i + 1 < window {
+                    return None;
+                }
+                let start = i + 1 - window;
+                let mut window_vals: Vec<f64> = values[start..=i].iter().filter_map(|v| *v).collect();
+                if window_vals.is_empty() {
+                    return None;
+                }
+                window_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let idx = ((window_vals.len() - 1) as f64 * quantile).round() as usize;
+                Some(window_vals[idx])
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn rolling_correlation(arr1: arrays::ArrayBorrow<'_>, arr2: arrays::ArrayBorrow<'_>, window: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let values1 = collect_nullable_f64_values(&arr1.get::<ArrayImpl>().inner)?;
+        let values2 = collect_nullable_f64_values(&arr2.get::<ArrayImpl>().inner)?;
+        let window = window as usize;
+
+        if values1.len() != values2.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+        if window == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Window size must be > 0".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = (0..values1.len())
+            .map(|i| {
+                if i + 1 < window {
+                    return None;
+                }
+                let start = i + 1 - window;
+                let pairs: Vec<(f64, f64)> = (start..=i)
+                    .filter_map(|j| {
+                        match (values1[j], values2[j]) {
+                            (Some(a), Some(b)) => Some((a, b)),
+                            _ => None,
+                        }
+                    })
+                    .collect();
+                if pairs.len() < 2 {
+                    return None;
+                }
+                let n = pairs.len() as f64;
+                let mean1 = pairs.iter().map(|(a, _)| a).sum::<f64>() / n;
+                let mean2 = pairs.iter().map(|(_, b)| b).sum::<f64>() / n;
+                let cov = pairs.iter().map(|(a, b)| (a - mean1) * (b - mean2)).sum::<f64>() / n;
+                let std1 = (pairs.iter().map(|(a, _)| (a - mean1).powi(2)).sum::<f64>() / n).sqrt();
+                let std2 = (pairs.iter().map(|(_, b)| (b - mean2).powi(2)).sum::<f64>() / n).sqrt();
+                if std1 == 0.0 || std2 == 0.0 {
+                    return None;
+                }
+                Some(cov / (std1 * std2))
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn rolling_covariance(arr1: arrays::ArrayBorrow<'_>, arr2: arrays::ArrayBorrow<'_>, window: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let values1 = collect_nullable_f64_values(&arr1.get::<ArrayImpl>().inner)?;
+        let values2 = collect_nullable_f64_values(&arr2.get::<ArrayImpl>().inner)?;
+        let window = window as usize;
+
+        if values1.len() != values2.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+        if window == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Window size must be > 0".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = (0..values1.len())
+            .map(|i| {
+                if i + 1 < window {
+                    return None;
+                }
+                let start = i + 1 - window;
+                let pairs: Vec<(f64, f64)> = (start..=i)
+                    .filter_map(|j| {
+                        match (values1[j], values2[j]) {
+                            (Some(a), Some(b)) => Some((a, b)),
+                            _ => None,
+                        }
+                    })
+                    .collect();
+                if pairs.len() < 2 {
+                    return None;
+                }
+                let n = pairs.len() as f64;
+                let mean1 = pairs.iter().map(|(a, _)| a).sum::<f64>() / n;
+                let mean2 = pairs.iter().map(|(_, b)| b).sum::<f64>() / n;
+                let cov = pairs.iter().map(|(a, b)| (a - mean1) * (b - mean2)).sum::<f64>() / (n - 1.0);
+                Some(cov)
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 22.5: Array Search Operations
+    // ========================================================================
+
+    fn binary_search(arr: arrays::ArrayBorrow<'_>, value: f64) -> Result<i64, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let valid_values: Vec<(usize, f64)> = values.iter()
+            .enumerate()
+            .filter_map(|(i, v)| v.map(|x| (i, x)))
+            .collect();
+
+        match valid_values.binary_search_by(|(_, v)| v.partial_cmp(&value).unwrap_or(std::cmp::Ordering::Equal)) {
+            Ok(idx) => Ok(valid_values[idx].0 as i64),
+            Err(_) => Ok(-1),
+        }
+    }
+
+    fn index_of(arr: arrays::ArrayBorrow<'_>, value: f64) -> Result<Option<u64>, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        for (i, opt) in values.iter().enumerate() {
+            if let Some(v) = opt {
+                if (*v - value).abs() < f64::EPSILON {
+                    return Ok(Some(i as u64));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn last_index_of(arr: arrays::ArrayBorrow<'_>, value: f64) -> Result<Option<u64>, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        for (i, opt) in values.iter().enumerate().rev() {
+            if let Some(v) = opt {
+                if (*v - value).abs() < f64::EPSILON {
+                    return Ok(Some(i as u64));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn count_value(arr: arrays::ArrayBorrow<'_>, value: f64) -> Result<u64, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let count = values.iter()
+            .filter(|opt| opt.map(|v| (v - value).abs() < f64::EPSILON).unwrap_or(false))
+            .count();
+        Ok(count as u64)
+    }
+
+    fn find_all(arr: arrays::ArrayBorrow<'_>, value: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let indices: arrow_array::UInt64Array = values.iter()
+            .enumerate()
+            .filter_map(|(i, opt)| {
+                if opt.map(|v| (v - value).abs() < f64::EPSILON).unwrap_or(false) {
+                    Some(Some(i as u64))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(indices) }))
+    }
+
+    fn contains_value(arr: arrays::ArrayBorrow<'_>, value: f64) -> Result<bool, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        for opt in &values {
+            if let Some(v) = opt {
+                if (*v - value).abs() < f64::EPSILON {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    // ========================================================================
+    // Phase 22.6: String Array Operations
+    // ========================================================================
+
+    fn longest_common_prefix(arr: arrays::ArrayBorrow<'_>) -> Result<String, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+        let valid_strings: Vec<&str> = strings.iter().filter_map(|s| s.as_deref()).collect();
+
+        if valid_strings.is_empty() {
+            return Ok(String::new());
+        }
+
+        let first = valid_strings[0];
+        let mut prefix_len = first.len();
+
+        for s in &valid_strings[1..] {
+            prefix_len = prefix_len.min(
+                first.chars().zip(s.chars())
+                    .take_while(|(a, b)| a == b)
+                    .count()
+            );
+            if prefix_len == 0 {
+                break;
+            }
+        }
+
+        Ok(first.chars().take(prefix_len).collect())
+    }
+
+    fn longest_common_suffix(arr: arrays::ArrayBorrow<'_>) -> Result<String, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+        let valid_strings: Vec<&str> = strings.iter().filter_map(|s| s.as_deref()).collect();
+
+        if valid_strings.is_empty() {
+            return Ok(String::new());
+        }
+
+        let first: String = valid_strings[0].chars().rev().collect();
+        let mut suffix_len = first.len();
+
+        for s in &valid_strings[1..] {
+            let rev: String = s.chars().rev().collect();
+            suffix_len = suffix_len.min(
+                first.chars().zip(rev.chars())
+                    .take_while(|(a, b)| a == b)
+                    .count()
+            );
+            if suffix_len == 0 {
+                break;
+            }
+        }
+
+        Ok(valid_strings[0].chars().rev().take(suffix_len).collect::<String>().chars().rev().collect())
+    }
+
+    fn string_at(arr: arrays::ArrayBorrow<'_>, index: u64) -> Result<Option<String>, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+        let index = index as usize;
+
+        if index >= strings.len() {
+            return Ok(None);
+        }
+
+        Ok(strings[index].clone())
+    }
+
+    fn natural_sort_indices(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let mut indices: Vec<usize> = (0..strings.len()).collect();
+        indices.sort_by(|&a, &b| {
+            match (&strings[a], &strings[b]) {
+                (Some(s1), Some(s2)) => natural_compare(s1, s2),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+
+        let result: arrow_array::UInt64Array = indices.into_iter().map(|i| Some(i as u64)).collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn extract_numbers(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+        let regex = regex::Regex::new(r"\d+").map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        let result: arrow_array::StringArray = strings.iter()
+            .map(|opt| {
+                opt.as_ref().map(|s| {
+                    regex.find_iter(s).map(|m| m.as_str()).collect::<Vec<_>>().join("")
+                })
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn extract_letters(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::StringArray = strings.iter()
+            .map(|opt| {
+                opt.as_ref().map(|s| {
+                    s.chars().filter(|c| c.is_alphabetic()).collect::<String>()
+                })
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 22.7: Hash Functions
+    // ========================================================================
+
+    fn fnv1a_hash(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::UInt64Array = strings.iter()
+            .map(|opt| opt.as_ref().map(|s| compute_fnv1a(s.as_bytes())))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn xxhash(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::UInt64Array = strings.iter()
+            .map(|opt| opt.as_ref().map(|s| compute_xxhash(s.as_bytes())))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn crc32(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::UInt32Array = strings.iter()
+            .map(|opt| opt.as_ref().map(|s| compute_crc32(s.as_bytes())))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn murmur_hash(arr: arrays::ArrayBorrow<'_>, seed: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::UInt64Array = strings.iter()
+            .map(|opt| opt.as_ref().map(|s| compute_murmur3(s.as_bytes(), seed)))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn city_hash(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+
+        // CityHash64-like implementation (simplified)
+        let result: arrow_array::UInt64Array = strings.iter()
+            .map(|opt| opt.as_ref().map(|s| compute_city_hash(s.as_bytes())))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn hash_dedup_indices(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let strings = extract_string_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut indices: Vec<u64> = Vec::new();
+
+        for (i, opt) in strings.iter().enumerate() {
+            if let Some(s) = opt {
+                let hash = compute_fnv1a(s.as_bytes());
+                if !seen.contains(&hash) {
+                    seen.insert(hash);
+                    indices.push(i as u64);
+                }
+            }
+        }
+
+        let result: arrow_array::UInt64Array = indices.into_iter().map(Some).collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+}
+
+// ============================================================================
+// Phase 22 Helper Functions
+// ============================================================================
+
+// compute_levenshtein, compute_jaro, compute_jaro_winkler already defined earlier
+
+/// Compute Dice coefficient using bigrams
+fn compute_dice(s1: &str, s2: &str) -> f64 {
+    if s1.len() < 2 && s2.len() < 2 {
+        return if s1 == s2 { 1.0 } else { 0.0 };
+    }
+
+    let bigrams1: std::collections::HashSet<(char, char)> = s1.chars()
+        .zip(s1.chars().skip(1))
+        .collect();
+    let bigrams2: std::collections::HashSet<(char, char)> = s2.chars()
+        .zip(s2.chars().skip(1))
+        .collect();
+
+    if bigrams1.is_empty() && bigrams2.is_empty() {
+        return 1.0;
+    }
+    if bigrams1.is_empty() || bigrams2.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = bigrams1.intersection(&bigrams2).count();
+    (2.0 * intersection as f64) / (bigrams1.len() + bigrams2.len()) as f64
+}
+
+/// Natural string comparison (numeric-aware)
+fn natural_compare(s1: &str, s2: &str) -> std::cmp::Ordering {
+    let mut chars1 = s1.chars().peekable();
+    let mut chars2 = s2.chars().peekable();
+
+    loop {
+        match (chars1.peek(), chars2.peek()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(&c1), Some(&c2)) => {
+                if c1.is_ascii_digit() && c2.is_ascii_digit() {
+                    // Extract numbers
+                    let mut n1 = String::new();
+                    while let Some(&c) = chars1.peek() {
+                        if c.is_ascii_digit() {
+                            n1.push(c);
+                            chars1.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    let mut n2 = String::new();
+                    while let Some(&c) = chars2.peek() {
+                        if c.is_ascii_digit() {
+                            n2.push(c);
+                            chars2.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    let num1: u64 = n1.parse().unwrap_or(0);
+                    let num2: u64 = n2.parse().unwrap_or(0);
+                    match num1.cmp(&num2) {
+                        std::cmp::Ordering::Equal => continue,
+                        other => return other,
+                    }
+                } else {
+                    chars1.next();
+                    chars2.next();
+                    match c1.cmp(&c2) {
+                        std::cmp::Ordering::Equal => continue,
+                        other => return other,
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// FNV-1a hash
+fn compute_fnv1a(data: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 14695981039346656037;
+    const FNV_PRIME: u64 = 1099511628211;
+
+    let mut hash = FNV_OFFSET;
+    for byte in data {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Simple xxHash-like implementation
+fn compute_xxhash(data: &[u8]) -> u64 {
+    const PRIME1: u64 = 11400714785074694791;
+    const PRIME2: u64 = 14029467366897019727;
+    const PRIME3: u64 = 1609587929392839161;
+    const PRIME4: u64 = 9650029242287828579;
+    const PRIME5: u64 = 2870177450012600261;
+
+    let mut hash = PRIME5.wrapping_add(data.len() as u64);
+
+    for chunk in data.chunks(8) {
+        let mut val = 0u64;
+        for (i, &byte) in chunk.iter().enumerate() {
+            val |= (byte as u64) << (i * 8);
+        }
+        hash ^= val.wrapping_mul(PRIME1);
+        hash = hash.rotate_left(27).wrapping_mul(PRIME4);
+    }
+
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(PRIME2);
+    hash ^= hash >> 29;
+    hash = hash.wrapping_mul(PRIME3);
+    hash ^= hash >> 32;
+
+    hash
+}
+
+/// CRC32 implementation
+fn compute_crc32(data: &[u8]) -> u32 {
+    const CRC32_TABLE: [u32; 256] = generate_crc32_table();
+
+    let mut crc = 0xFFFFFFFFu32;
+    for byte in data {
+        let idx = ((crc ^ (*byte as u32)) & 0xFF) as usize;
+        crc = (crc >> 8) ^ CRC32_TABLE[idx];
+    }
+    !crc
+}
+
+const fn generate_crc32_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut crc = i as u32;
+        let mut j = 0;
+        while j < 8 {
+            if crc & 1 == 1 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+            j += 1;
+        }
+        table[i] = crc;
+        i += 1;
+    }
+    table
+}
+
+/// Simple Murmur3-like hash
+fn compute_murmur3(data: &[u8], seed: u32) -> u64 {
+    const C1: u64 = 0x87c37b91114253d5;
+    const C2: u64 = 0x4cf5ad432745937f;
+
+    let mut h1 = seed as u64;
+    let mut h2 = seed as u64;
+
+    for chunk in data.chunks(16) {
+        let mut k1 = 0u64;
+        let mut k2 = 0u64;
+
+        for (i, &byte) in chunk.iter().enumerate() {
+            if i < 8 {
+                k1 |= (byte as u64) << (i * 8);
+            } else {
+                k2 |= (byte as u64) << ((i - 8) * 8);
+            }
+        }
+
+        k1 = k1.wrapping_mul(C1);
+        k1 = k1.rotate_left(31);
+        k1 = k1.wrapping_mul(C2);
+        h1 ^= k1;
+
+        k2 = k2.wrapping_mul(C2);
+        k2 = k2.rotate_left(33);
+        k2 = k2.wrapping_mul(C1);
+        h2 ^= k2;
+    }
+
+    h1 ^= data.len() as u64;
+    h2 ^= data.len() as u64;
+
+    h1 = h1.wrapping_add(h2);
+    h2 = h2.wrapping_add(h1);
+
+    h1 ^= h1 >> 33;
+    h1 = h1.wrapping_mul(0xff51afd7ed558ccd);
+    h1 ^= h1 >> 33;
+    h1 = h1.wrapping_mul(0xc4ceb9fe1a85ec53);
+    h1 ^= h1 >> 33;
+
+    h1.wrapping_add(h2)
+}
+
+/// Simple CityHash-like implementation
+fn compute_city_hash(data: &[u8]) -> u64 {
+    const K0: u64 = 0xc3a5c85c97cb3127;
+    const K1: u64 = 0xb492b66fbe98f273;
+    const K2: u64 = 0x9ae16a3b2f90404f;
+
+    let len = data.len();
+    if len == 0 {
+        return K2;
+    }
+
+    let mut hash = K2.wrapping_mul(len as u64);
+
+    for chunk in data.chunks(8) {
+        let mut val = 0u64;
+        for (i, &byte) in chunk.iter().enumerate() {
+            val |= (byte as u64) << (i * 8);
+        }
+        hash ^= val.wrapping_mul(K1);
+        hash = hash.rotate_left(37).wrapping_mul(K0);
+    }
+
+    hash ^= hash >> 47;
+    hash = hash.wrapping_mul(K0);
+    hash ^= hash >> 47;
+
+    hash
 }
 
 // ============================================================================

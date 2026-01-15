@@ -2609,4 +2609,154 @@ interface compute {
 
     /// Add column totals to contingency table
     add-column-totals: func(batch: borrow<record-batch>) -> result<record-batch, arrow-error>;
+
+    /// ========== String Similarity Functions (Phase 22.1) ==========
+
+    /// Levenshtein distance between two string arrays
+    levenshtein-distance: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Normalized Levenshtein similarity (0-1, higher is more similar)
+    levenshtein-similarity: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Jaro similarity (0-1)
+    jaro-similarity: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Jaro-Winkler similarity (0-1, boosts prefix matches)
+    jaro-winkler-similarity: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Hamming distance (for equal-length strings)
+    hamming-distance: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Dice coefficient (2*|intersection|/|set1|+|set2|)
+    dice-coefficient: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if strings are within edit distance threshold
+    within-edit-distance: func(left: borrow<array>, right: borrow<array>, max-distance: u32) -> result<array, arrow-error>;
+
+    /// ========== Data Validation (Phase 22.2) ==========
+
+    /// Check if all values are in allowed set
+    is-in-set: func(arr: borrow<array>, allowed: list<string>) -> result<array, arrow-error>;
+
+    /// Check if numeric values are in range [min, max]
+    is-in-range: func(arr: borrow<array>, min-val: f64, max-val: f64) -> result<array, arrow-error>;
+
+    /// Check if string matches regex pattern
+    matches-pattern: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// Check if string is valid email format
+    is-valid-email: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if string is valid URL format
+    is-valid-url: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if string is valid UUID format
+    is-valid-uuid: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    // is-valid-json already defined in Phase 17
+
+    /// Check if all values are unique (returns single boolean)
+    all-unique: func(arr: borrow<array>) -> result<bool, arrow-error>;
+
+    /// ========== Bit Manipulation (Phase 22.3) ==========
+
+    /// Count number of set bits (popcount)
+    bit-count: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get bit at position
+    bit-get: func(arr: borrow<array>, position: u8) -> result<array, arrow-error>;
+
+    /// Set bit at position
+    bit-set: func(arr: borrow<array>, position: u8) -> result<array, arrow-error>;
+
+    /// Clear bit at position
+    bit-clear: func(arr: borrow<array>, position: u8) -> result<array, arrow-error>;
+
+    /// Toggle bit at position
+    bit-toggle: func(arr: borrow<array>, position: u8) -> result<array, arrow-error>;
+
+    // bit-reverse, leading-zeros, trailing-zeros already defined in Phase 17
+
+    /// ========== Sliding Window Statistics (Phase 22.4) ==========
+
+    /// Rolling variance
+    rolling-variance: func(arr: borrow<array>, window: u32) -> result<array, arrow-error>;
+
+    /// Rolling standard deviation
+    rolling-stddev: func(arr: borrow<array>, window: u32) -> result<array, arrow-error>;
+
+    /// Rolling skewness
+    rolling-skewness: func(arr: borrow<array>, window: u32) -> result<array, arrow-error>;
+
+    /// Rolling kurtosis
+    rolling-kurtosis: func(arr: borrow<array>, window: u32) -> result<array, arrow-error>;
+
+    /// Rolling quantile
+    rolling-quantile: func(arr: borrow<array>, window: u32, quantile: f64) -> result<array, arrow-error>;
+
+    /// Rolling correlation between two arrays
+    rolling-correlation: func(arr1: borrow<array>, arr2: borrow<array>, window: u32) -> result<array, arrow-error>;
+
+    /// Rolling covariance between two arrays
+    rolling-covariance: func(arr1: borrow<array>, arr2: borrow<array>, window: u32) -> result<array, arrow-error>;
+
+    /// ========== Array Search Operations (Phase 22.5) ==========
+
+    /// Binary search for value (returns index or -1)
+    binary-search: func(arr: borrow<array>, value: f64) -> result<s64, arrow-error>;
+
+    /// Find index of first occurrence of value
+    index-of: func(arr: borrow<array>, value: f64) -> result<option<u64>, arrow-error>;
+
+    /// Find index of last occurrence of value
+    last-index-of: func(arr: borrow<array>, value: f64) -> result<option<u64>, arrow-error>;
+
+    /// Count occurrences of value
+    count-value: func(arr: borrow<array>, value: f64) -> result<u64, arrow-error>;
+
+    /// Find indices of all occurrences of value
+    find-all: func(arr: borrow<array>, value: f64) -> result<array, arrow-error>;
+
+    /// Check if array contains value
+    contains-value: func(arr: borrow<array>, value: f64) -> result<bool, arrow-error>;
+
+    /// ========== String Array Operations (Phase 22.6) ==========
+
+    /// Find longest common prefix of all strings
+    longest-common-prefix: func(arr: borrow<array>) -> result<string, arrow-error>;
+
+    /// Find longest common suffix of all strings
+    longest-common-suffix: func(arr: borrow<array>) -> result<string, arrow-error>;
+
+    /// Get string at index (scalar extraction)
+    string-at: func(arr: borrow<array>, index: u64) -> result<option<string>, arrow-error>;
+
+    /// Sort strings naturally (numeric-aware)
+    natural-sort-indices: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract numeric part from strings
+    extract-numbers: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract alphabetic part from strings
+    extract-letters: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Hash Functions (Phase 22.7) ==========
+
+    /// FNV-1a hash of each value
+    fnv1a-hash: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// xxHash of each value (fast non-crypto hash)
+    xxhash: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// CRC32 of each string value
+    crc32: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Murmur hash of each value
+    murmur-hash: func(arr: borrow<array>, seed: u32) -> result<array, arrow-error>;
+
+    /// City hash of each value
+    city-hash: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Hash-based deduplication index
+    hash-dedup-indices: func(arr: borrow<array>) -> result<array, arrow-error>;
 }
