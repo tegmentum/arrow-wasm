@@ -2759,4 +2759,117 @@ interface compute {
 
     /// Hash-based deduplication index
     hash-dedup-indices: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Vector Distance Functions (Phase 23.1) ==========
+
+    /// Chebyshev distance (L-infinity norm)
+    chebyshev-distance: func(arr1: borrow<array>, arr2: borrow<array>) -> result<f64, arrow-error>;
+
+    /// Minkowski distance with parameter p
+    minkowski-distance: func(arr1: borrow<array>, arr2: borrow<array>, p: f64) -> result<f64, arrow-error>;
+
+    /// Cosine distance (1 - cosine_similarity)
+    cosine-distance: func(arr1: borrow<array>, arr2: borrow<array>) -> result<f64, arrow-error>;
+
+    /// ========== Data Binning & Discretization (Phase 23.2) ==========
+
+    /// Equal-width binning (fixed number of bins)
+    equal-width-bins: func(arr: borrow<array>, num-bins: u32) -> result<array, arrow-error>;
+
+    /// Equal-frequency binning (quantile-based)
+    equal-freq-bins: func(arr: borrow<array>, num-bins: u32) -> result<array, arrow-error>;
+
+    /// Custom bin edges
+    custom-bins: func(arr: borrow<array>, edges: list<f64>) -> result<array, arrow-error>;
+
+    /// Get bin edges for equal-width binning
+    get-equal-width-edges: func(arr: borrow<array>, num-bins: u32) -> result<list<f64>, arrow-error>;
+
+    /// Get bin edges for equal-frequency binning
+    get-equal-freq-edges: func(arr: borrow<array>, num-bins: u32) -> result<list<f64>, arrow-error>;
+
+    /// ========== Outlier Detection (Phase 23.3) ==========
+
+    /// Detect outliers using IQR method
+    iqr-outliers: func(arr: borrow<array>, multiplier: f64) -> result<array, arrow-error>;
+
+    /// Detect outliers using Z-score
+    zscore-outliers: func(arr: borrow<array>, threshold: f64) -> result<array, arrow-error>;
+
+    /// Detect outliers using modified Z-score (median-based)
+    modified-zscore-outliers: func(arr: borrow<array>, threshold: f64) -> result<array, arrow-error>;
+
+    /// Get IQR bounds (returns [lower, upper])
+    iqr-bounds: func(arr: borrow<array>, multiplier: f64) -> result<tuple<f64, f64>, arrow-error>;
+
+    /// Winsorize array (clip outliers to bounds)
+    winsorize: func(arr: borrow<array>, lower-percentile: f64, upper-percentile: f64) -> result<array, arrow-error>;
+
+    /// Replace outliers with specified value
+    replace-outliers: func(arr: borrow<array>, method: string, threshold: f64, replacement: f64) -> result<array, arrow-error>;
+
+    /// ========== Data Normalization & Scaling (Phase 23.4) ==========
+
+    /// Min-max scaling to [0, 1]
+    min-max-scale: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Min-max scaling to custom range
+    min-max-scale-range: func(arr: borrow<array>, min-val: f64, max-val: f64) -> result<array, arrow-error>;
+
+    /// L2 normalization (unit vector)
+    l2-normalize: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// L1 normalization (sum to 1)
+    l1-normalize: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Max-abs scaling (divide by max absolute value)
+    max-abs-scale: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Quantile transformation (uniform distribution)
+    quantile-transform: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Array Comparison Operations (Phase 23.5) ==========
+
+    /// Element-wise approximately equal (within tolerance)
+    approx-equal: func(arr1: borrow<array>, arr2: borrow<array>, tolerance: f64) -> result<array, arrow-error>;
+
+    /// Count differences between arrays
+    count-differences: func(arr1: borrow<array>, arr2: borrow<array>) -> result<u64, arrow-error>;
+
+    /// Absolute difference between arrays
+    abs-diff: func(arr1: borrow<array>, arr2: borrow<array>) -> result<array, arrow-error>;
+
+    /// Relative difference between arrays
+    relative-diff: func(arr1: borrow<array>, arr2: borrow<array>) -> result<array, arrow-error>;
+
+    /// Percent difference between arrays
+    percent-diff: func(arr1: borrow<array>, arr2: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Running Statistics (Phase 23.6) ==========
+
+    /// Running variance
+    running-variance: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Running median (computationally expensive)
+    running-median: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Array Transformation Utilities (Phase 23.7) ==========
+
+    /// Interpolate missing values linearly
+    interpolate-linear: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Replace values matching condition
+    replace-where: func(arr: borrow<array>, condition: borrow<array>, replacement: f64) -> result<array, arrow-error>;
+
+    /// Clip values to range
+    clip-range: func(arr: borrow<array>, min-val: f64, max-val: f64) -> result<array, arrow-error>;
+
+    /// Smooth array using moving average
+    smooth: func(arr: borrow<array>, window: u32) -> result<array, arrow-error>;
+
+    /// Resample array to new length
+    resample: func(arr: borrow<array>, new-length: u64) -> result<array, arrow-error>;
+
+    /// Downsample by taking every nth element
+    downsample: func(arr: borrow<array>, factor: u32) -> result<array, arrow-error>;
 }

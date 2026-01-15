@@ -27068,6 +27068,840 @@ impl compute::Guest for Component {
         let result: arrow_array::UInt64Array = indices.into_iter().map(Some).collect();
         Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
     }
+
+    // ========================================================================
+    // Phase 23.1: Vector Distance Functions
+    // ========================================================================
+
+    fn chebyshev_distance(arr1: arrays::ArrayBorrow<'_>, arr2: arrays::ArrayBorrow<'_>) -> Result<f64, compute::ArrowError> {
+        let values1 = collect_nullable_f64_values(&arr1.get::<ArrayImpl>().inner)?;
+        let values2 = collect_nullable_f64_values(&arr2.get::<ArrayImpl>().inner)?;
+
+        if values1.len() != values2.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let max_diff: f64 = values1.iter().zip(values2.iter())
+            .filter_map(|(a, b)| match (a, b) {
+                (Some(x), Some(y)) => Some((x - y).abs()),
+                _ => None,
+            })
+            .fold(0.0f64, |acc, x| acc.max(x));
+
+        Ok(max_diff)
+    }
+
+    fn minkowski_distance(arr1: arrays::ArrayBorrow<'_>, arr2: arrays::ArrayBorrow<'_>, p: f64) -> Result<f64, compute::ArrowError> {
+        if p <= 0.0 {
+            return Err(compute::ArrowError::InvalidArgument("p must be positive".to_string()));
+        }
+
+        let values1 = collect_nullable_f64_values(&arr1.get::<ArrayImpl>().inner)?;
+        let values2 = collect_nullable_f64_values(&arr2.get::<ArrayImpl>().inner)?;
+
+        if values1.len() != values2.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let sum: f64 = values1.iter().zip(values2.iter())
+            .filter_map(|(a, b)| match (a, b) {
+                (Some(x), Some(y)) => Some((x - y).abs().powf(p)),
+                _ => None,
+            })
+            .sum();
+
+        Ok(sum.powf(1.0 / p))
+    }
+
+    fn cosine_distance(arr1: arrays::ArrayBorrow<'_>, arr2: arrays::ArrayBorrow<'_>) -> Result<f64, compute::ArrowError> {
+        let values1 = collect_nullable_f64_values(&arr1.get::<ArrayImpl>().inner)?;
+        let values2 = collect_nullable_f64_values(&arr2.get::<ArrayImpl>().inner)?;
+
+        if values1.len() != values2.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let mut dot = 0.0;
+        let mut norm1 = 0.0;
+        let mut norm2 = 0.0;
+
+        for (a, b) in values1.iter().zip(values2.iter()) {
+            if let (Some(x), Some(y)) = (a, b) {
+                dot += x * y;
+                norm1 += x * x;
+                norm2 += y * y;
+            }
+        }
+
+        let denom = norm1.sqrt() * norm2.sqrt();
+        if denom == 0.0 {
+            return Ok(1.0);
+        }
+
+        Ok(1.0 - dot / denom)
+    }
+
+    // ========================================================================
+    // Phase 23.2: Data Binning & Discretization
+    // ========================================================================
+
+    fn equal_width_bins(arr: arrays::ArrayBorrow<'_>, num_bins: u32) -> Result<arrays::Array, compute::ArrowError> {
+        if num_bins == 0 {
+            return Err(compute::ArrowError::InvalidArgument("num_bins must be > 0".to_string()));
+        }
+
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let valid: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+
+        if valid.is_empty() {
+            let result: arrow_array::Int64Array = values.iter().map(|_| None).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        let min_val = valid.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_val = valid.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let bin_width = (max_val - min_val) / num_bins as f64;
+
+        let result: arrow_array::Int64Array = values.iter()
+            .map(|opt| {
+                opt.map(|v| {
+                    if bin_width == 0.0 {
+                        0i64
+                    } else {
+                        let bin = ((v - min_val) / bin_width).floor() as i64;
+                        bin.min(num_bins as i64 - 1).max(0)
+                    }
+                })
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn equal_freq_bins(arr: arrays::ArrayBorrow<'_>, num_bins: u32) -> Result<arrays::Array, compute::ArrowError> {
+        if num_bins == 0 {
+            return Err(compute::ArrowError::InvalidArgument("num_bins must be > 0".to_string()));
+        }
+
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let mut valid_with_idx: Vec<(usize, f64)> = values.iter()
+            .enumerate()
+            .filter_map(|(i, v)| v.map(|x| (i, x)))
+            .collect();
+
+        if valid_with_idx.is_empty() {
+            let result: arrow_array::Int64Array = values.iter().map(|_| None).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        valid_with_idx.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let n = valid_with_idx.len();
+        let bin_size = (n + num_bins as usize - 1) / num_bins as usize;
+
+        let mut bins = vec![None; values.len()];
+        for (rank, (orig_idx, _)) in valid_with_idx.iter().enumerate() {
+            let bin = (rank / bin_size).min(num_bins as usize - 1);
+            bins[*orig_idx] = Some(bin as i64);
+        }
+
+        let result: arrow_array::Int64Array = bins.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn custom_bins(arr: arrays::ArrayBorrow<'_>, edges: Vec<f64>) -> Result<arrays::Array, compute::ArrowError> {
+        if edges.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("edges must not be empty".to_string()));
+        }
+
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::Int64Array = values.iter()
+            .map(|opt| {
+                opt.map(|v| {
+                    let mut bin = 0i64;
+                    for (i, &edge) in edges.iter().enumerate() {
+                        if v >= edge {
+                            bin = i as i64;
+                        }
+                    }
+                    bin
+                })
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn get_equal_width_edges(arr: arrays::ArrayBorrow<'_>, num_bins: u32) -> Result<Vec<f64>, compute::ArrowError> {
+        if num_bins == 0 {
+            return Err(compute::ArrowError::InvalidArgument("num_bins must be > 0".to_string()));
+        }
+
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let valid: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+
+        if valid.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let min_val = valid.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_val = valid.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let bin_width = (max_val - min_val) / num_bins as f64;
+
+        let edges: Vec<f64> = (0..=num_bins)
+            .map(|i| min_val + bin_width * i as f64)
+            .collect();
+
+        Ok(edges)
+    }
+
+    fn get_equal_freq_edges(arr: arrays::ArrayBorrow<'_>, num_bins: u32) -> Result<Vec<f64>, compute::ArrowError> {
+        if num_bins == 0 {
+            return Err(compute::ArrowError::InvalidArgument("num_bins must be > 0".to_string()));
+        }
+
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let mut valid: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+
+        if valid.is_empty() {
+            return Ok(vec![]);
+        }
+
+        valid.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        let n = valid.len();
+        let mut edges = vec![valid[0]];
+
+        for i in 1..num_bins {
+            let idx = ((i as f64 / num_bins as f64) * n as f64) as usize;
+            edges.push(valid[idx.min(n - 1)]);
+        }
+        edges.push(valid[n - 1]);
+
+        Ok(edges)
+    }
+
+    // ========================================================================
+    // Phase 23.3: Outlier Detection
+    // ========================================================================
+
+    fn iqr_outliers(arr: arrays::ArrayBorrow<'_>, multiplier: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let mut valid: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+
+        if valid.is_empty() {
+            let result: arrow_array::BooleanArray = values.iter().map(|_| None).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        valid.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = valid.len();
+        let q1 = valid[n / 4];
+        let q3 = valid[3 * n / 4];
+        let iqr = q3 - q1;
+        let lower = q1 - multiplier * iqr;
+        let upper = q3 + multiplier * iqr;
+
+        let result: arrow_array::BooleanArray = values.iter()
+            .map(|opt| opt.map(|v| v < lower || v > upper))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn zscore_outliers(arr: arrays::ArrayBorrow<'_>, threshold: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let valid: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+
+        if valid.len() < 2 {
+            let result: arrow_array::BooleanArray = values.iter().map(|_| None).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        let mean = valid.iter().sum::<f64>() / valid.len() as f64;
+        let variance = valid.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / valid.len() as f64;
+        let std = variance.sqrt();
+
+        if std == 0.0 {
+            let result: arrow_array::BooleanArray = values.iter().map(|v| v.map(|_| false)).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        let result: arrow_array::BooleanArray = values.iter()
+            .map(|opt| opt.map(|v| ((v - mean) / std).abs() > threshold))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn modified_zscore_outliers(arr: arrays::ArrayBorrow<'_>, threshold: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let mut valid: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+
+        if valid.is_empty() {
+            let result: arrow_array::BooleanArray = values.iter().map(|_| None).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        valid.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = valid[valid.len() / 2];
+
+        let mut deviations: Vec<f64> = valid.iter().map(|v| (v - median).abs()).collect();
+        deviations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mad = deviations[deviations.len() / 2];
+
+        if mad == 0.0 {
+            let result: arrow_array::BooleanArray = values.iter().map(|v| v.map(|_| false)).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        // Modified Z-score = 0.6745 * (x - median) / MAD
+        let result: arrow_array::BooleanArray = values.iter()
+            .map(|opt| opt.map(|v| (0.6745 * (v - median) / mad).abs() > threshold))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn iqr_bounds(arr: arrays::ArrayBorrow<'_>, multiplier: f64) -> Result<(f64, f64), compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let mut valid: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+
+        if valid.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("Array is empty".to_string()));
+        }
+
+        valid.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = valid.len();
+        let q1 = valid[n / 4];
+        let q3 = valid[3 * n / 4];
+        let iqr = q3 - q1;
+        let lower = q1 - multiplier * iqr;
+        let upper = q3 + multiplier * iqr;
+
+        Ok((lower, upper))
+    }
+
+    fn winsorize(arr: arrays::ArrayBorrow<'_>, lower_percentile: f64, upper_percentile: f64) -> Result<arrays::Array, compute::ArrowError> {
+        if lower_percentile < 0.0 || lower_percentile > 100.0 || upper_percentile < 0.0 || upper_percentile > 100.0 {
+            return Err(compute::ArrowError::InvalidArgument("Percentiles must be between 0 and 100".to_string()));
+        }
+
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let mut valid: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+
+        if valid.is_empty() {
+            let result: arrow_array::Float64Array = values.iter().map(|_| None).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        valid.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = valid.len();
+        let lower_idx = ((lower_percentile / 100.0) * n as f64) as usize;
+        let upper_idx = ((upper_percentile / 100.0) * n as f64) as usize;
+        let lower_val = valid[lower_idx.min(n - 1)];
+        let upper_val = valid[upper_idx.min(n - 1)];
+
+        let result: arrow_array::Float64Array = values.iter()
+            .map(|opt| opt.map(|v| v.max(lower_val).min(upper_val)))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn replace_outliers(arr: arrays::ArrayBorrow<'_>, method: String, threshold: f64, replacement: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let mut valid: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+
+        if valid.is_empty() {
+            let result: arrow_array::Float64Array = values.iter().map(|_| None).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        valid.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        let is_outlier: Box<dyn Fn(f64) -> bool> = match method.as_str() {
+            "iqr" => {
+                let n = valid.len();
+                let q1 = valid[n / 4];
+                let q3 = valid[3 * n / 4];
+                let iqr = q3 - q1;
+                let lower = q1 - threshold * iqr;
+                let upper = q3 + threshold * iqr;
+                Box::new(move |v| v < lower || v > upper)
+            },
+            "zscore" => {
+                let mean = valid.iter().sum::<f64>() / valid.len() as f64;
+                let variance = valid.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / valid.len() as f64;
+                let std = variance.sqrt();
+                if std == 0.0 {
+                    Box::new(|_| false)
+                } else {
+                    Box::new(move |v| ((v - mean) / std).abs() > threshold)
+                }
+            },
+            _ => return Err(compute::ArrowError::InvalidArgument("Invalid method. Use 'iqr' or 'zscore'".to_string())),
+        };
+
+        let result: arrow_array::Float64Array = values.iter()
+            .map(|opt| opt.map(|v| if is_outlier(v) { replacement } else { v }))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 23.4: Data Normalization & Scaling
+    // ========================================================================
+
+    fn min_max_scale(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let valid: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+
+        if valid.is_empty() {
+            let result: arrow_array::Float64Array = values.iter().map(|_| None).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        let min_val = valid.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_val = valid.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let range = max_val - min_val;
+
+        let result: arrow_array::Float64Array = values.iter()
+            .map(|opt| opt.map(|v| if range == 0.0 { 0.5 } else { (v - min_val) / range }))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn min_max_scale_range(arr: arrays::ArrayBorrow<'_>, min_val: f64, max_val: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let valid: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+
+        if valid.is_empty() {
+            let result: arrow_array::Float64Array = values.iter().map(|_| None).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        let data_min = valid.iter().cloned().fold(f64::INFINITY, f64::min);
+        let data_max = valid.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let data_range = data_max - data_min;
+        let target_range = max_val - min_val;
+
+        let result: arrow_array::Float64Array = values.iter()
+            .map(|opt| opt.map(|v| {
+                if data_range == 0.0 {
+                    (min_val + max_val) / 2.0
+                } else {
+                    min_val + ((v - data_min) / data_range) * target_range
+                }
+            }))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn l2_normalize(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let norm: f64 = values.iter()
+            .filter_map(|v| v.map(|x| x * x))
+            .sum::<f64>()
+            .sqrt();
+
+        let result: arrow_array::Float64Array = values.iter()
+            .map(|opt| opt.map(|v| if norm == 0.0 { 0.0 } else { v / norm }))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn l1_normalize(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let sum: f64 = values.iter()
+            .filter_map(|v| v.map(|x| x.abs()))
+            .sum();
+
+        let result: arrow_array::Float64Array = values.iter()
+            .map(|opt| opt.map(|v| if sum == 0.0 { 0.0 } else { v / sum }))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn max_abs_scale(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let max_abs: f64 = values.iter()
+            .filter_map(|v| v.map(|x| x.abs()))
+            .fold(0.0f64, |acc, x| acc.max(x));
+
+        let result: arrow_array::Float64Array = values.iter()
+            .map(|opt| opt.map(|v| if max_abs == 0.0 { 0.0 } else { v / max_abs }))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn quantile_transform(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let mut valid_with_idx: Vec<(usize, f64)> = values.iter()
+            .enumerate()
+            .filter_map(|(i, v)| v.map(|x| (i, x)))
+            .collect();
+
+        if valid_with_idx.is_empty() {
+            let result: arrow_array::Float64Array = values.iter().map(|_| None).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        valid_with_idx.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let n = valid_with_idx.len();
+        let mut result_vals = vec![None; values.len()];
+
+        for (rank, (orig_idx, _)) in valid_with_idx.iter().enumerate() {
+            result_vals[*orig_idx] = Some(rank as f64 / (n - 1).max(1) as f64);
+        }
+
+        let result: arrow_array::Float64Array = result_vals.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 23.5: Array Comparison Operations
+    // ========================================================================
+
+    fn approx_equal(arr1: arrays::ArrayBorrow<'_>, arr2: arrays::ArrayBorrow<'_>, tolerance: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let values1 = collect_nullable_f64_values(&arr1.get::<ArrayImpl>().inner)?;
+        let values2 = collect_nullable_f64_values(&arr2.get::<ArrayImpl>().inner)?;
+
+        if values1.len() != values2.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let result: arrow_array::BooleanArray = values1.iter().zip(values2.iter())
+            .map(|(a, b)| {
+                match (a, b) {
+                    (Some(x), Some(y)) => Some((x - y).abs() <= tolerance),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn count_differences(arr1: arrays::ArrayBorrow<'_>, arr2: arrays::ArrayBorrow<'_>) -> Result<u64, compute::ArrowError> {
+        let values1 = collect_nullable_f64_values(&arr1.get::<ArrayImpl>().inner)?;
+        let values2 = collect_nullable_f64_values(&arr2.get::<ArrayImpl>().inner)?;
+
+        if values1.len() != values2.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let count = values1.iter().zip(values2.iter())
+            .filter(|(a, b)| {
+                match (a, b) {
+                    (Some(x), Some(y)) => (x - y).abs() > f64::EPSILON,
+                    (None, None) => false,
+                    _ => true,
+                }
+            })
+            .count();
+
+        Ok(count as u64)
+    }
+
+    fn abs_diff(arr1: arrays::ArrayBorrow<'_>, arr2: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values1 = collect_nullable_f64_values(&arr1.get::<ArrayImpl>().inner)?;
+        let values2 = collect_nullable_f64_values(&arr2.get::<ArrayImpl>().inner)?;
+
+        if values1.len() != values2.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = values1.iter().zip(values2.iter())
+            .map(|(a, b)| {
+                match (a, b) {
+                    (Some(x), Some(y)) => Some((x - y).abs()),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn relative_diff(arr1: arrays::ArrayBorrow<'_>, arr2: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values1 = collect_nullable_f64_values(&arr1.get::<ArrayImpl>().inner)?;
+        let values2 = collect_nullable_f64_values(&arr2.get::<ArrayImpl>().inner)?;
+
+        if values1.len() != values2.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = values1.iter().zip(values2.iter())
+            .map(|(a, b)| {
+                match (a, b) {
+                    (Some(x), Some(y)) => {
+                        let max_abs = x.abs().max(y.abs());
+                        if max_abs == 0.0 { Some(0.0) } else { Some((x - y).abs() / max_abs) }
+                    },
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn percent_diff(arr1: arrays::ArrayBorrow<'_>, arr2: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values1 = collect_nullable_f64_values(&arr1.get::<ArrayImpl>().inner)?;
+        let values2 = collect_nullable_f64_values(&arr2.get::<ArrayImpl>().inner)?;
+
+        if values1.len() != values2.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = values1.iter().zip(values2.iter())
+            .map(|(a, b)| {
+                match (a, b) {
+                    (Some(x), Some(y)) => {
+                        if *y == 0.0 { None } else { Some(((x - y) / y) * 100.0) }
+                    },
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 23.6: Running Statistics
+    // ========================================================================
+
+    fn running_variance(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        // Welford's online algorithm
+        let mut count = 0;
+        let mut mean = 0.0;
+        let mut m2 = 0.0;
+
+        let result: arrow_array::Float64Array = values.iter()
+            .map(|opt| {
+                if let Some(v) = opt {
+                    count += 1;
+                    let delta = v - mean;
+                    mean += delta / count as f64;
+                    let delta2 = v - mean;
+                    m2 += delta * delta2;
+
+                    if count > 1 {
+                        Some(m2 / (count - 1) as f64)
+                    } else {
+                        Some(0.0)
+                    }
+                } else {
+                    if count > 1 { Some(m2 / (count - 1) as f64) } else { None }
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn running_median(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let mut seen: Vec<f64> = Vec::new();
+        let result: arrow_array::Float64Array = values.iter()
+            .map(|opt| {
+                if let Some(v) = opt {
+                    seen.push(*v);
+                    let mut sorted = seen.clone();
+                    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    Some(sorted[sorted.len() / 2])
+                } else {
+                    if seen.is_empty() {
+                        None
+                    } else {
+                        let mut sorted = seen.clone();
+                        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                        Some(sorted[sorted.len() / 2])
+                    }
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 23.7: Array Transformation Utilities
+    // ========================================================================
+
+    fn interpolate_linear(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        if values.is_empty() {
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(arrow_array::Float64Array::from(Vec::<f64>::new())) }));
+        }
+
+        let mut result = vec![None; values.len()];
+
+        // Copy known values
+        for (i, v) in values.iter().enumerate() {
+            if v.is_some() {
+                result[i] = *v;
+            }
+        }
+
+        // Interpolate missing values
+        let mut i = 0;
+        while i < values.len() {
+            if result[i].is_none() {
+                // Find start of missing segment
+                let start = i;
+                let prev_val = if start > 0 { result[start - 1] } else { None };
+
+                // Find end of missing segment
+                while i < values.len() && result[i].is_none() {
+                    i += 1;
+                }
+                let end = i;
+                let next_val = if end < values.len() { result[end] } else { None };
+
+                // Interpolate
+                match (prev_val, next_val) {
+                    (Some(pv), Some(nv)) => {
+                        let segment_len = end - start + 1;
+                        for j in start..end {
+                            let t = (j - start + 1) as f64 / segment_len as f64;
+                            result[j] = Some(pv + t * (nv - pv));
+                        }
+                    },
+                    (Some(pv), None) => {
+                        for j in start..end {
+                            result[j] = Some(pv);
+                        }
+                    },
+                    (None, Some(nv)) => {
+                        for j in start..end {
+                            result[j] = Some(nv);
+                        }
+                    },
+                    (None, None) => {},
+                }
+            } else {
+                i += 1;
+            }
+        }
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn replace_where(arr: arrays::ArrayBorrow<'_>, condition: arrays::ArrayBorrow<'_>, replacement: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let cond_inner = &condition.get::<ArrayImpl>().inner;
+        let bool_arr = cond_inner.as_any().downcast_ref::<arrow_array::BooleanArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected boolean array for condition".to_string()))?;
+
+        if values.len() != bool_arr.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = values.iter().zip(bool_arr.iter())
+            .map(|(v, c)| {
+                match (v, c) {
+                    (Some(val), Some(true)) => Some(replacement),
+                    (Some(val), _) => Some(*val),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn clip_range(arr: arrays::ArrayBorrow<'_>, min_val: f64, max_val: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::Float64Array = values.iter()
+            .map(|opt| opt.map(|v| v.max(min_val).min(max_val)))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn smooth(arr: arrays::ArrayBorrow<'_>, window: u32) -> Result<arrays::Array, compute::ArrowError> {
+        if window == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Window size must be > 0".to_string()));
+        }
+
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let window = window as usize;
+
+        let result: arrow_array::Float64Array = (0..values.len())
+            .map(|i| {
+                let start = i.saturating_sub(window / 2);
+                let end = (i + window / 2 + 1).min(values.len());
+                let window_vals: Vec<f64> = values[start..end].iter().filter_map(|v| *v).collect();
+                if window_vals.is_empty() {
+                    None
+                } else {
+                    Some(window_vals.iter().sum::<f64>() / window_vals.len() as f64)
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn resample(arr: arrays::ArrayBorrow<'_>, new_length: u64) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let old_len = values.len();
+        let new_len = new_length as usize;
+
+        if new_len == 0 {
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(arrow_array::Float64Array::from(Vec::<f64>::new())) }));
+        }
+
+        if old_len == 0 {
+            let result: arrow_array::Float64Array = (0..new_len).map(|_| None).collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        let result: arrow_array::Float64Array = (0..new_len)
+            .map(|i| {
+                let idx = (i as f64 * (old_len - 1) as f64 / (new_len - 1).max(1) as f64) as usize;
+                values[idx.min(old_len - 1)]
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn downsample(arr: arrays::ArrayBorrow<'_>, factor: u32) -> Result<arrays::Array, compute::ArrowError> {
+        if factor == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Factor must be > 0".to_string()));
+        }
+
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let factor = factor as usize;
+
+        let result: arrow_array::Float64Array = values.iter()
+            .step_by(factor)
+            .cloned()
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
 }
 
 // ============================================================================
