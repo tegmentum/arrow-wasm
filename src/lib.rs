@@ -8085,6 +8085,22 @@ fn compute_xxhash64(data: &[u8], seed: u64) -> u64 {
     h64
 }
 
+/// Take rows from a record batch by indices
+fn take_batch(batch: &ArrowRecordBatch, indices: &arrow_array::UInt64Array) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+    let mut columns: Vec<Arc<dyn arrow_array::Array>> = Vec::new();
+
+    for col in batch.columns() {
+        let taken = arrow_select::take::take(col.as_ref(), indices, None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        columns.push(taken);
+    }
+
+    let result = ArrowRecordBatch::try_new(batch.schema(), columns)
+        .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+    Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+}
+
 // ============================================================================
 // Compute implementation (stub - to be expanded)
 // ============================================================================
@@ -21988,6 +22004,989 @@ impl compute::Guest for Component {
         }
 
         Ok(count)
+    }
+
+    // ========== Phase 18.1: Record Batch Set Operations ==========
+
+    fn batch_union(left: record_batch::RecordBatchBorrow<'_>, right: record_batch::RecordBatchBorrow<'_>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let left_impl = left.get::<RecordBatchImpl>();
+        let right_impl = right.get::<RecordBatchImpl>();
+
+        let result = arrow_select::concat::concat_batches(&left_impl.inner.schema(), [&left_impl.inner, &right_impl.inner])
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn batch_union_all(batches: Vec<record_batch::RecordBatchBorrow<'_>>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        if batches.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("Need at least one batch".to_string()));
+        }
+
+        let batch_impls: Vec<&RecordBatchImpl> = batches.iter().map(|b| b.get::<RecordBatchImpl>()).collect();
+        let schema = batch_impls[0].inner.schema();
+        let arrow_batches: Vec<&ArrowRecordBatch> = batch_impls.iter().map(|b| &b.inner).collect();
+
+        let result = arrow_select::concat::concat_batches(&schema, arrow_batches)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn batch_intersect(left: record_batch::RecordBatchBorrow<'_>, right: record_batch::RecordBatchBorrow<'_>, columns: Vec<String>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let left_impl = left.get::<RecordBatchImpl>();
+        let right_impl = right.get::<RecordBatchImpl>();
+
+        // Build hash set of right side keys
+        use std::collections::HashSet;
+        let mut right_keys: HashSet<Vec<String>> = HashSet::new();
+
+        for row in 0..right_impl.inner.num_rows() {
+            let key: Vec<String> = columns.iter()
+                .filter_map(|col| {
+                    right_impl.inner.schema().index_of(col).ok()
+                        .and_then(|idx| extract_string_at_index(&right_impl.inner.column(idx), row))
+                })
+                .collect();
+            right_keys.insert(key);
+        }
+
+        // Find matching rows in left
+        let mut indices: Vec<u64> = Vec::new();
+        for row in 0..left_impl.inner.num_rows() {
+            let key: Vec<String> = columns.iter()
+                .filter_map(|col| {
+                    left_impl.inner.schema().index_of(col).ok()
+                        .and_then(|idx| extract_string_at_index(&left_impl.inner.column(idx), row))
+                })
+                .collect();
+            if right_keys.contains(&key) {
+                indices.push(row as u64);
+            }
+        }
+
+        let indices_arr = arrow_array::UInt64Array::from(indices);
+        take_batch(&left_impl.inner, &indices_arr)
+    }
+
+    fn batch_except(left: record_batch::RecordBatchBorrow<'_>, right: record_batch::RecordBatchBorrow<'_>, columns: Vec<String>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let left_impl = left.get::<RecordBatchImpl>();
+        let right_impl = right.get::<RecordBatchImpl>();
+
+        // Build hash set of right side keys
+        use std::collections::HashSet;
+        let mut right_keys: HashSet<Vec<String>> = HashSet::new();
+
+        for row in 0..right_impl.inner.num_rows() {
+            let key: Vec<String> = columns.iter()
+                .filter_map(|col| {
+                    right_impl.inner.schema().index_of(col).ok()
+                        .and_then(|idx| extract_string_at_index(&right_impl.inner.column(idx), row))
+                })
+                .collect();
+            right_keys.insert(key);
+        }
+
+        // Find rows in left that are NOT in right
+        let mut indices: Vec<u64> = Vec::new();
+        for row in 0..left_impl.inner.num_rows() {
+            let key: Vec<String> = columns.iter()
+                .filter_map(|col| {
+                    left_impl.inner.schema().index_of(col).ok()
+                        .and_then(|idx| extract_string_at_index(&left_impl.inner.column(idx), row))
+                })
+                .collect();
+            if !right_keys.contains(&key) {
+                indices.push(row as u64);
+            }
+        }
+
+        let indices_arr = arrow_array::UInt64Array::from(indices);
+        take_batch(&left_impl.inner, &indices_arr)
+    }
+
+    fn batch_distinct(batch: record_batch::RecordBatchBorrow<'_>, columns: Vec<String>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+
+        use std::collections::HashSet;
+        let mut seen: HashSet<Vec<String>> = HashSet::new();
+        let mut indices: Vec<u64> = Vec::new();
+
+        for row in 0..batch_impl.inner.num_rows() {
+            let key: Vec<String> = columns.iter()
+                .filter_map(|col| {
+                    batch_impl.inner.schema().index_of(col).ok()
+                        .and_then(|idx| extract_string_at_index(&batch_impl.inner.column(idx), row))
+                })
+                .collect();
+            if seen.insert(key) {
+                indices.push(row as u64);
+            }
+        }
+
+        let indices_arr = arrow_array::UInt64Array::from(indices);
+        take_batch(&batch_impl.inner, &indices_arr)
+    }
+
+    // ========== Phase 18.2: Text Tokenization ==========
+
+    fn tokenize_words(arr: arrays::ArrayBorrow<'_>, lowercase: bool) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        // Build a list array of strings
+        let mut offsets: Vec<i32> = vec![0];
+        let mut values: Vec<String> = Vec::new();
+
+        for i in 0..str_arr.len() {
+            if str_arr.is_null(i) {
+                offsets.push(values.len() as i32);
+            } else {
+                let text = str_arr.value(i);
+                let words: Vec<&str> = text.split(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
+                for word in words {
+                    if lowercase {
+                        values.push(word.to_lowercase());
+                    } else {
+                        values.push(word.to_string());
+                    }
+                }
+                offsets.push(values.len() as i32);
+            }
+        }
+
+        let values_arr: arrow_array::StringArray = values.into_iter().map(Some).collect();
+        let offsets_buffer = arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(offsets));
+        let list_arr = arrow_array::ListArray::new(
+            Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Utf8, true)),
+            offsets_buffer,
+            Arc::new(values_arr),
+            None,
+        );
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(list_arr) }))
+    }
+
+    fn ngrams(arr: arrays::ArrayBorrow<'_>, n: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let n = n as usize;
+        if n == 0 {
+            return Err(compute::ArrowError::InvalidArgument("n must be positive".to_string()));
+        }
+
+        let mut offsets: Vec<i32> = vec![0];
+        let mut values: Vec<String> = Vec::new();
+
+        for i in 0..str_arr.len() {
+            if str_arr.is_null(i) {
+                offsets.push(values.len() as i32);
+            } else {
+                let words: Vec<&str> = str_arr.value(i)
+                    .split(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
+                if words.len() >= n {
+                    for window in words.windows(n) {
+                        values.push(window.join(" "));
+                    }
+                }
+                offsets.push(values.len() as i32);
+            }
+        }
+
+        let values_arr: arrow_array::StringArray = values.into_iter().map(Some).collect();
+        let offsets_buffer = arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(offsets));
+        let list_arr = arrow_array::ListArray::new(
+            Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Utf8, true)),
+            offsets_buffer,
+            Arc::new(values_arr),
+            None,
+        );
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(list_arr) }))
+    }
+
+    fn char_ngrams(arr: arrays::ArrayBorrow<'_>, n: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let n = n as usize;
+        if n == 0 {
+            return Err(compute::ArrowError::InvalidArgument("n must be positive".to_string()));
+        }
+
+        let mut offsets: Vec<i32> = vec![0];
+        let mut values: Vec<String> = Vec::new();
+
+        for i in 0..str_arr.len() {
+            if str_arr.is_null(i) {
+                offsets.push(values.len() as i32);
+            } else {
+                let chars: Vec<char> = str_arr.value(i).chars().collect();
+                if chars.len() >= n {
+                    for window in chars.windows(n) {
+                        values.push(window.iter().collect());
+                    }
+                }
+                offsets.push(values.len() as i32);
+            }
+        }
+
+        let values_arr: arrow_array::StringArray = values.into_iter().map(Some).collect();
+        let offsets_buffer = arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(offsets));
+        let list_arr = arrow_array::ListArray::new(
+            Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Utf8, true)),
+            offsets_buffer,
+            Arc::new(values_arr),
+            None,
+        );
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(list_arr) }))
+    }
+
+    fn word_count(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let result: Vec<Option<u32>> = (0..str_arr.len())
+            .map(|i| {
+                if str_arr.is_null(i) {
+                    None
+                } else {
+                    let count = str_arr.value(i)
+                        .split(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
+                        .filter(|s| !s.is_empty())
+                        .count();
+                    Some(count as u32)
+                }
+            })
+            .collect();
+
+        let result_arr: arrow_array::UInt32Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn sentence_split(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let mut offsets: Vec<i32> = vec![0];
+        let mut values: Vec<String> = Vec::new();
+
+        for i in 0..str_arr.len() {
+            if str_arr.is_null(i) {
+                offsets.push(values.len() as i32);
+            } else {
+                // Split on sentence-ending punctuation followed by whitespace or end
+                let text = str_arr.value(i);
+                let mut current = String::new();
+                let mut prev_end = false;
+
+                for c in text.chars() {
+                    current.push(c);
+                    if c == '.' || c == '!' || c == '?' {
+                        prev_end = true;
+                    } else if prev_end && c.is_whitespace() {
+                        let sentence = current.trim().to_string();
+                        if !sentence.is_empty() {
+                            values.push(sentence);
+                        }
+                        current = String::new();
+                        prev_end = false;
+                    } else {
+                        prev_end = false;
+                    }
+                }
+
+                let sentence = current.trim().to_string();
+                if !sentence.is_empty() {
+                    values.push(sentence);
+                }
+                offsets.push(values.len() as i32);
+            }
+        }
+
+        let values_arr: arrow_array::StringArray = values.into_iter().map(Some).collect();
+        let offsets_buffer = arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(offsets));
+        let list_arr = arrow_array::ListArray::new(
+            Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Utf8, true)),
+            offsets_buffer,
+            Arc::new(values_arr),
+            None,
+        );
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(list_arr) }))
+    }
+
+    fn remove_stopwords(arr: arrays::ArrayBorrow<'_>, stopwords: Vec<String>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        use std::collections::HashSet;
+        let stopwords_set: HashSet<String> = stopwords.into_iter().map(|s| s.to_lowercase()).collect();
+
+        if let Some(list_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::ListArray>() {
+            let values = list_arr.values();
+            let str_values = values.as_any().downcast_ref::<arrow_array::StringArray>()
+                .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected list of strings".to_string()))?;
+
+            let mut new_offsets: Vec<i32> = vec![0];
+            let mut new_values: Vec<String> = Vec::new();
+
+            for i in 0..list_arr.len() {
+                if list_arr.is_null(i) {
+                    new_offsets.push(new_values.len() as i32);
+                } else {
+                    let start = list_arr.value_offsets()[i] as usize;
+                    let end = list_arr.value_offsets()[i + 1] as usize;
+
+                    for j in start..end {
+                        if !str_values.is_null(j) {
+                            let word = str_values.value(j);
+                            if !stopwords_set.contains(&word.to_lowercase()) {
+                                new_values.push(word.to_string());
+                            }
+                        }
+                    }
+                    new_offsets.push(new_values.len() as i32);
+                }
+            }
+
+            let values_arr: arrow_array::StringArray = new_values.into_iter().map(Some).collect();
+            let offsets_buffer = arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(new_offsets));
+            let new_list_arr = arrow_array::ListArray::new(
+                Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Utf8, true)),
+                offsets_buffer,
+                Arc::new(values_arr),
+                None,
+            );
+
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(new_list_arr) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Expected list array".to_string()))
+        }
+    }
+
+    // ========== Phase 18.3: Batch Column Operations ==========
+
+    fn batch_add_column(batch: record_batch::RecordBatchBorrow<'_>, name: String, column: arrays::ArrayBorrow<'_>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let col_impl = column.get::<ArrayImpl>();
+
+        if col_impl.inner.len() != batch_impl.inner.num_rows() {
+            return Err(compute::ArrowError::InvalidArgument("Column length must match batch row count".to_string()));
+        }
+
+        let mut fields: Vec<arrow_schema::FieldRef> = batch_impl.inner.schema().fields().iter().cloned().collect();
+        let mut columns: Vec<Arc<dyn arrow_array::Array>> = batch_impl.inner.columns().to_vec();
+
+        fields.push(Arc::new(arrow_schema::Field::new(&name, col_impl.inner.data_type().clone(), true)));
+        columns.push(col_impl.inner.clone());
+
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+        let result = ArrowRecordBatch::try_new(schema, columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn batch_replace_column(batch: record_batch::RecordBatchBorrow<'_>, name: String, column: arrays::ArrayBorrow<'_>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let col_impl = column.get::<ArrayImpl>();
+
+        let idx = batch_impl.inner.schema().index_of(&name)
+            .map_err(|_| compute::ArrowError::InvalidArgument(format!("Column '{}' not found", name)))?;
+
+        if col_impl.inner.len() != batch_impl.inner.num_rows() {
+            return Err(compute::ArrowError::InvalidArgument("Column length must match batch row count".to_string()));
+        }
+
+        let mut fields: Vec<arrow_schema::FieldRef> = batch_impl.inner.schema().fields().iter().cloned().collect();
+        let mut columns: Vec<Arc<dyn arrow_array::Array>> = batch_impl.inner.columns().to_vec();
+
+        fields[idx] = Arc::new(arrow_schema::Field::new(&name, col_impl.inner.data_type().clone(), true));
+        columns[idx] = col_impl.inner.clone();
+
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+        let result = ArrowRecordBatch::try_new(schema, columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn batch_rename_columns(batch: record_batch::RecordBatchBorrow<'_>, old_names: Vec<String>, new_names: Vec<String>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        if old_names.len() != new_names.len() {
+            return Err(compute::ArrowError::InvalidArgument("old_names and new_names must have same length".to_string()));
+        }
+
+        let batch_impl = batch.get::<RecordBatchImpl>();
+
+        use std::collections::HashMap;
+        let rename_map: HashMap<&str, &str> = old_names.iter().zip(new_names.iter())
+            .map(|(o, n)| (o.as_str(), n.as_str()))
+            .collect();
+
+        let fields: Vec<arrow_schema::FieldRef> = batch_impl.inner.schema().fields().iter()
+            .map(|f| {
+                if let Some(&new_name) = rename_map.get(f.name().as_str()) {
+                    Arc::new(arrow_schema::Field::new(new_name, f.data_type().clone(), f.is_nullable()))
+                } else {
+                    f.clone()
+                }
+            })
+            .collect();
+
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+        let result = ArrowRecordBatch::try_new(schema, batch_impl.inner.columns().to_vec())
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn batch_reorder_columns(batch: record_batch::RecordBatchBorrow<'_>, column_order: Vec<String>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+
+        let indices: Vec<usize> = column_order.iter()
+            .filter_map(|name| batch_impl.inner.schema().index_of(name).ok())
+            .collect();
+
+        let fields: Vec<arrow_schema::FieldRef> = indices.iter()
+            .map(|&i| batch_impl.inner.schema().field(i).clone().into())
+            .collect();
+
+        let columns: Vec<Arc<dyn arrow_array::Array>> = indices.iter()
+            .map(|&i| batch_impl.inner.column(i).clone())
+            .collect();
+
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+        let result = ArrowRecordBatch::try_new(schema, columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn batch_drop_columns(batch: record_batch::RecordBatchBorrow<'_>, columns_to_drop: Vec<String>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+
+        use std::collections::HashSet;
+        let drop_set: HashSet<&str> = columns_to_drop.iter().map(|s| s.as_str()).collect();
+
+        let indices: Vec<usize> = batch_impl.inner.schema().fields().iter()
+            .enumerate()
+            .filter(|(_, f)| !drop_set.contains(f.name().as_str()))
+            .map(|(i, _)| i)
+            .collect();
+
+        let fields: Vec<arrow_schema::FieldRef> = indices.iter()
+            .map(|&i| batch_impl.inner.schema().field(i).clone().into())
+            .collect();
+
+        let columns: Vec<Arc<dyn arrow_array::Array>> = indices.iter()
+            .map(|&i| batch_impl.inner.column(i).clone())
+            .collect();
+
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+        let result = ArrowRecordBatch::try_new(schema, columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn batch_select_columns(batch: record_batch::RecordBatchBorrow<'_>, columns_to_select: Vec<String>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+
+        let indices: Vec<usize> = columns_to_select.iter()
+            .filter_map(|name| batch_impl.inner.schema().index_of(name).ok())
+            .collect();
+
+        let fields: Vec<arrow_schema::FieldRef> = indices.iter()
+            .map(|&i| batch_impl.inner.schema().field(i).clone().into())
+            .collect();
+
+        let columns: Vec<Arc<dyn arrow_array::Array>> = indices.iter()
+            .map(|&i| batch_impl.inner.column(i).clone())
+            .collect();
+
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+        let result = ArrowRecordBatch::try_new(schema, columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    // ========== Phase 18.4: Data Partitioning ==========
+
+    fn hash_partition(batch: record_batch::RecordBatchBorrow<'_>, columns: Vec<String>, num_partitions: u32) -> Result<Vec<record_batch::RecordBatch>, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let num_partitions = num_partitions as usize;
+
+        if num_partitions == 0 {
+            return Err(compute::ArrowError::InvalidArgument("num_partitions must be positive".to_string()));
+        }
+
+        // Compute partition for each row
+        let mut partition_rows: Vec<Vec<u64>> = vec![Vec::new(); num_partitions];
+
+        for row in 0..batch_impl.inner.num_rows() {
+            let mut hasher_input = String::new();
+            for col in &columns {
+                if let Ok(idx) = batch_impl.inner.schema().index_of(col) {
+                    if let Some(s) = extract_string_at_index(&batch_impl.inner.column(idx), row) {
+                        hasher_input.push_str(&s);
+                        hasher_input.push('\0');
+                    }
+                }
+            }
+            let hash = fnv1a_hash(hasher_input.as_bytes());
+            let partition = (hash as usize) % num_partitions;
+            partition_rows[partition].push(row as u64);
+        }
+
+        // Build partitioned batches
+        let mut result = Vec::new();
+        for indices in partition_rows {
+            let indices_arr = arrow_array::UInt64Array::from(indices);
+            let partitioned = take_batch(&batch_impl.inner, &indices_arr)?;
+            result.push(partitioned);
+        }
+
+        Ok(result)
+    }
+
+    fn range_partition(batch: record_batch::RecordBatchBorrow<'_>, column: String, boundaries: Vec<f64>) -> Result<Vec<record_batch::RecordBatch>, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let num_partitions = boundaries.len() + 1;
+
+        let col_idx = batch_impl.inner.schema().index_of(&column)
+            .map_err(|_| compute::ArrowError::InvalidArgument(format!("Column '{}' not found", column)))?;
+
+        let col = batch_impl.inner.column(col_idx);
+        let values = collect_f64_values(col)?;
+
+        let mut partition_rows: Vec<Vec<u64>> = vec![Vec::new(); num_partitions];
+
+        for (row, &val) in values.iter().enumerate() {
+            let partition = boundaries.iter().position(|&b| val < b).unwrap_or(boundaries.len());
+            partition_rows[partition].push(row as u64);
+        }
+
+        let mut result = Vec::new();
+        for indices in partition_rows {
+            let indices_arr = arrow_array::UInt64Array::from(indices);
+            let partitioned = take_batch(&batch_impl.inner, &indices_arr)?;
+            result.push(partitioned);
+        }
+
+        Ok(result)
+    }
+
+    fn round_robin_partition(batch: record_batch::RecordBatchBorrow<'_>, num_partitions: u32) -> Result<Vec<record_batch::RecordBatch>, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let num_partitions = num_partitions as usize;
+
+        if num_partitions == 0 {
+            return Err(compute::ArrowError::InvalidArgument("num_partitions must be positive".to_string()));
+        }
+
+        let mut partition_rows: Vec<Vec<u64>> = vec![Vec::new(); num_partitions];
+
+        for row in 0..batch_impl.inner.num_rows() {
+            let partition = row % num_partitions;
+            partition_rows[partition].push(row as u64);
+        }
+
+        let mut result = Vec::new();
+        for indices in partition_rows {
+            let indices_arr = arrow_array::UInt64Array::from(indices);
+            let partitioned = take_batch(&batch_impl.inner, &indices_arr)?;
+            result.push(partitioned);
+        }
+
+        Ok(result)
+    }
+
+    fn partition_indices(batch: record_batch::RecordBatchBorrow<'_>, columns: Vec<String>, num_partitions: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let num_partitions = num_partitions as usize;
+
+        if num_partitions == 0 {
+            return Err(compute::ArrowError::InvalidArgument("num_partitions must be positive".to_string()));
+        }
+
+        let result: Vec<u32> = (0..batch_impl.inner.num_rows())
+            .map(|row| {
+                let mut hasher_input = String::new();
+                for col in &columns {
+                    if let Ok(idx) = batch_impl.inner.schema().index_of(col) {
+                        if let Some(s) = extract_string_at_index(&batch_impl.inner.column(idx), row) {
+                            hasher_input.push_str(&s);
+                            hasher_input.push('\0');
+                        }
+                    }
+                }
+                let hash = fnv1a_hash(hasher_input.as_bytes());
+                ((hash as usize) % num_partitions) as u32
+            })
+            .collect();
+
+        let result_arr = arrow_array::UInt32Array::from(result);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========== Phase 18.5: Vector/Math Operations ==========
+
+    fn dot_product(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<f64, compute::ArrowError> {
+        let left_vals = collect_f64_values(&left.get::<ArrayImpl>().inner)?;
+        let right_vals = collect_f64_values(&right.get::<ArrayImpl>().inner)?;
+
+        let len = left_vals.len().min(right_vals.len());
+        let result: f64 = (0..len).map(|i| left_vals[i] * right_vals[i]).sum();
+
+        Ok(result)
+    }
+
+    fn l1_norm(arr: arrays::ArrayBorrow<'_>) -> Result<f64, compute::ArrowError> {
+        let values = collect_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        Ok(values.iter().map(|x| x.abs()).sum())
+    }
+
+    fn l2_norm(arr: arrays::ArrayBorrow<'_>) -> Result<f64, compute::ArrowError> {
+        let values = collect_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let sum_sq: f64 = values.iter().map(|x| x * x).sum();
+        Ok(sum_sq.sqrt())
+    }
+
+    fn cosine_similarity(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<f64, compute::ArrowError> {
+        let left_vals = collect_f64_values(&left.get::<ArrayImpl>().inner)?;
+        let right_vals = collect_f64_values(&right.get::<ArrayImpl>().inner)?;
+
+        let len = left_vals.len().min(right_vals.len());
+
+        let dot: f64 = (0..len).map(|i| left_vals[i] * right_vals[i]).sum();
+        let norm_left: f64 = left_vals.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let norm_right: f64 = right_vals.iter().map(|x| x * x).sum::<f64>().sqrt();
+
+        if norm_left == 0.0 || norm_right == 0.0 {
+            Ok(0.0)
+        } else {
+            Ok(dot / (norm_left * norm_right))
+        }
+    }
+
+    fn euclidean_distance(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<f64, compute::ArrowError> {
+        let left_vals = collect_f64_values(&left.get::<ArrayImpl>().inner)?;
+        let right_vals = collect_f64_values(&right.get::<ArrayImpl>().inner)?;
+
+        let len = left_vals.len().min(right_vals.len());
+        let sum_sq: f64 = (0..len).map(|i| (left_vals[i] - right_vals[i]).powi(2)).sum();
+
+        Ok(sum_sq.sqrt())
+    }
+
+    fn manhattan_distance(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<f64, compute::ArrowError> {
+        let left_vals = collect_f64_values(&left.get::<ArrayImpl>().inner)?;
+        let right_vals = collect_f64_values(&right.get::<ArrayImpl>().inner)?;
+
+        let len = left_vals.len().min(right_vals.len());
+        let sum: f64 = (0..len).map(|i| (left_vals[i] - right_vals[i]).abs()).sum();
+
+        Ok(sum)
+    }
+
+    fn normalize_l2(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let norm: f64 = values.iter().map(|x| x * x).sum::<f64>().sqrt();
+
+        let result: Vec<f64> = if norm == 0.0 {
+            values
+        } else {
+            values.iter().map(|x| x / norm).collect()
+        };
+
+        let result_arr = arrow_array::Float64Array::from(result);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn power(arr: arrays::ArrayBorrow<'_>, exponent: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(f64_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Float64Array>() {
+            let result: arrow_array::Float64Array = f64_arr.iter()
+                .map(|v| v.map(|x| x.powf(exponent)))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(i64_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let result: arrow_array::Float64Array = i64_arr.iter()
+                .map(|v| v.map(|x| (x as f64).powf(exponent)))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Expected numeric array".to_string()))
+        }
+    }
+
+    // ========== Phase 18.6: Running Aggregations ==========
+
+    fn running_min(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let mut current_min: Option<f64> = None;
+
+        let result: Vec<Option<f64>> = values.iter()
+            .map(|v| {
+                if let Some(val) = v {
+                    current_min = Some(current_min.map_or(*val, |m| m.min(*val)));
+                }
+                current_min
+            })
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn running_max(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let mut current_max: Option<f64> = None;
+
+        let result: Vec<Option<f64>> = values.iter()
+            .map(|v| {
+                if let Some(val) = v {
+                    current_max = Some(current_max.map_or(*val, |m| m.max(*val)));
+                }
+                current_max
+            })
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn running_mean(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let mut sum = 0.0;
+        let mut count = 0u64;
+
+        let result: Vec<Option<f64>> = values.iter()
+            .map(|v| {
+                if let Some(val) = v {
+                    sum += val;
+                    count += 1;
+                }
+                if count > 0 { Some(sum / count as f64) } else { None }
+            })
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn running_stddev(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let mut sum = 0.0;
+        let mut sum_sq = 0.0;
+        let mut count = 0u64;
+
+        let result: Vec<Option<f64>> = values.iter()
+            .map(|v| {
+                if let Some(val) = v {
+                    sum += val;
+                    sum_sq += val * val;
+                    count += 1;
+                }
+                if count > 1 {
+                    let mean = sum / count as f64;
+                    let variance = (sum_sq / count as f64) - (mean * mean);
+                    Some(variance.max(0.0).sqrt())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn running_count(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let mut count = 0u64;
+
+        let result: Vec<u64> = (0..arr_impl.inner.len())
+            .map(|i| {
+                if !arr_impl.inner.is_null(i) {
+                    count += 1;
+                }
+                count
+            })
+            .collect();
+
+        let result_arr = arrow_array::UInt64Array::from(result);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn running_product(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let mut product = 1.0;
+        let mut started = false;
+
+        let result: Vec<Option<f64>> = values.iter()
+            .map(|v| {
+                if let Some(val) = v {
+                    product *= val;
+                    started = true;
+                }
+                if started { Some(product) } else { None }
+            })
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========== Phase 18.7: Array Comparison Operations ==========
+
+    fn arrays_equal(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        let len = left_impl.inner.len().min(right_impl.inner.len());
+
+        let result: Vec<Option<bool>> = (0..len)
+            .map(|i| {
+                if left_impl.inner.is_null(i) && right_impl.inner.is_null(i) {
+                    Some(true)
+                } else if left_impl.inner.is_null(i) || right_impl.inner.is_null(i) {
+                    Some(false)
+                } else {
+                    let left_str = extract_string_at_index(&left_impl.inner, i);
+                    let right_str = extract_string_at_index(&right_impl.inner, i);
+                    Some(left_str == right_str)
+                }
+            })
+            .collect();
+
+        let result_arr: arrow_array::BooleanArray = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn arrays_all_equal(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<bool, compute::ArrowError> {
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        if left_impl.inner.len() != right_impl.inner.len() {
+            return Ok(false);
+        }
+
+        for i in 0..left_impl.inner.len() {
+            if left_impl.inner.is_null(i) != right_impl.inner.is_null(i) {
+                return Ok(false);
+            }
+            if !left_impl.inner.is_null(i) {
+                let left_str = extract_string_at_index(&left_impl.inner, i);
+                let right_str = extract_string_at_index(&right_impl.inner, i);
+                if left_str != right_str {
+                    return Ok(false);
+                }
+            }
+        }
+
+        Ok(true)
+    }
+
+    fn arrays_any_equal(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<bool, compute::ArrowError> {
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        let len = left_impl.inner.len().min(right_impl.inner.len());
+
+        for i in 0..len {
+            if left_impl.inner.is_null(i) && right_impl.inner.is_null(i) {
+                return Ok(true);
+            }
+            if !left_impl.inner.is_null(i) && !right_impl.inner.is_null(i) {
+                let left_str = extract_string_at_index(&left_impl.inner, i);
+                let right_str = extract_string_at_index(&right_impl.inner, i);
+                if left_str == right_str {
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn element_min(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_vals = collect_nullable_f64_values(&left.get::<ArrayImpl>().inner)?;
+        let right_vals = collect_nullable_f64_values(&right.get::<ArrayImpl>().inner)?;
+
+        let len = left_vals.len().min(right_vals.len());
+
+        let result: Vec<Option<f64>> = (0..len)
+            .map(|i| {
+                match (left_vals[i], right_vals[i]) {
+                    (Some(l), Some(r)) => Some(l.min(r)),
+                    (Some(l), None) => Some(l),
+                    (None, Some(r)) => Some(r),
+                    (None, None) => None,
+                }
+            })
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn element_max(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_vals = collect_nullable_f64_values(&left.get::<ArrayImpl>().inner)?;
+        let right_vals = collect_nullable_f64_values(&right.get::<ArrayImpl>().inner)?;
+
+        let len = left_vals.len().min(right_vals.len());
+
+        let result: Vec<Option<f64>> = (0..len)
+            .map(|i| {
+                match (left_vals[i], right_vals[i]) {
+                    (Some(l), Some(r)) => Some(l.max(r)),
+                    (Some(l), None) => Some(l),
+                    (None, Some(r)) => Some(r),
+                    (None, None) => None,
+                }
+            })
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn clip(arr: arrays::ArrayBorrow<'_>, min: Option<f64>, max: Option<f64>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: Vec<Option<f64>> = values.iter()
+            .map(|v| {
+                v.map(|x| {
+                    let mut clipped = x;
+                    if let Some(min_val) = min {
+                        clipped = clipped.max(min_val);
+                    }
+                    if let Some(max_val) = max {
+                        clipped = clipped.min(max_val);
+                    }
+                    clipped
+                })
+            })
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
     }
 }
 

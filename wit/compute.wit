@@ -2089,4 +2089,141 @@ interface compute {
 
     /// Count constraint violations (nulls, out of range, duplicates)
     count-violations: func(arr: borrow<array>, allow-nulls: bool, min: option<f64>, max: option<f64>) -> result<u64, arrow-error>;
+
+    /// ========== Record Batch Set Operations (Phase 18.1) ==========
+
+    /// Union two record batches (concatenate rows, must have same schema)
+    batch-union: func(left: borrow<record-batch>, right: borrow<record-batch>) -> result<record-batch, arrow-error>;
+
+    /// Union multiple record batches
+    batch-union-all: func(batches: list<borrow<record-batch>>) -> result<record-batch, arrow-error>;
+
+    /// Intersect two batches (rows in both, based on specified columns)
+    batch-intersect: func(left: borrow<record-batch>, right: borrow<record-batch>, columns: list<string>) -> result<record-batch, arrow-error>;
+
+    /// Except/difference (rows in left but not in right)
+    batch-except: func(left: borrow<record-batch>, right: borrow<record-batch>, columns: list<string>) -> result<record-batch, arrow-error>;
+
+    /// Distinct rows in batch based on columns
+    batch-distinct: func(batch: borrow<record-batch>, columns: list<string>) -> result<record-batch, arrow-error>;
+
+    /// ========== Text Tokenization (Phase 18.2) ==========
+
+    /// Split strings into word tokens (returns list array)
+    tokenize-words: func(arr: borrow<array>, lowercase: bool) -> result<array, arrow-error>;
+
+    /// Generate word n-grams from strings
+    ngrams: func(arr: borrow<array>, n: u32) -> result<array, arrow-error>;
+
+    /// Generate character n-grams
+    char-ngrams: func(arr: borrow<array>, n: u32) -> result<array, arrow-error>;
+
+    /// Count words in each string
+    word-count: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Extract sentences from text
+    sentence-split: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Remove stopwords from tokenized text (list of strings)
+    remove-stopwords: func(arr: borrow<array>, stopwords: list<string>) -> result<array, arrow-error>;
+
+    /// ========== Batch Column Operations (Phase 18.3) ==========
+
+    /// Add a column to a record batch
+    batch-add-column: func(batch: borrow<record-batch>, name: string, column: borrow<array>) -> result<record-batch, arrow-error>;
+
+    /// Replace a column in a record batch
+    batch-replace-column: func(batch: borrow<record-batch>, name: string, column: borrow<array>) -> result<record-batch, arrow-error>;
+
+    /// Rename columns in a batch
+    batch-rename-columns: func(batch: borrow<record-batch>, old-names: list<string>, new-names: list<string>) -> result<record-batch, arrow-error>;
+
+    /// Reorder columns in a batch
+    batch-reorder-columns: func(batch: borrow<record-batch>, column-order: list<string>) -> result<record-batch, arrow-error>;
+
+    /// Drop columns from a batch
+    batch-drop-columns: func(batch: borrow<record-batch>, columns: list<string>) -> result<record-batch, arrow-error>;
+
+    /// Select columns from a batch by name
+    batch-select-columns: func(batch: borrow<record-batch>, columns: list<string>) -> result<record-batch, arrow-error>;
+
+    /// ========== Data Partitioning (Phase 18.4) ==========
+
+    /// Hash partition a batch into N partitions
+    hash-partition: func(batch: borrow<record-batch>, columns: list<string>, num-partitions: u32) -> result<list<record-batch>, arrow-error>;
+
+    /// Range partition based on column values
+    range-partition: func(batch: borrow<record-batch>, column: string, boundaries: list<f64>) -> result<list<record-batch>, arrow-error>;
+
+    /// Round-robin partition
+    round-robin-partition: func(batch: borrow<record-batch>, num-partitions: u32) -> result<list<record-batch>, arrow-error>;
+
+    /// Get partition assignment for each row (returns partition index array)
+    partition-indices: func(batch: borrow<record-batch>, columns: list<string>, num-partitions: u32) -> result<array, arrow-error>;
+
+    /// ========== Vector/Math Operations (Phase 18.5) ==========
+
+    /// Dot product of two arrays
+    dot-product: func(left: borrow<array>, right: borrow<array>) -> result<f64, arrow-error>;
+
+    /// L1 norm (sum of absolute values)
+    l1-norm: func(arr: borrow<array>) -> result<f64, arrow-error>;
+
+    /// L2 norm (Euclidean norm)
+    l2-norm: func(arr: borrow<array>) -> result<f64, arrow-error>;
+
+    /// Cosine similarity between two arrays
+    cosine-similarity: func(left: borrow<array>, right: borrow<array>) -> result<f64, arrow-error>;
+
+    /// Euclidean distance between two arrays
+    euclidean-distance: func(left: borrow<array>, right: borrow<array>) -> result<f64, arrow-error>;
+
+    /// Manhattan distance between two arrays
+    manhattan-distance: func(left: borrow<array>, right: borrow<array>) -> result<f64, arrow-error>;
+
+    /// Normalize array to unit vector (L2)
+    normalize-l2: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Element-wise power
+    power: func(arr: borrow<array>, exponent: f64) -> result<array, arrow-error>;
+
+    /// ========== Running Aggregations (Phase 18.6) ==========
+
+    /// Running/expanding minimum
+    running-min: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Running/expanding maximum
+    running-max: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Running/expanding mean
+    running-mean: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Running/expanding standard deviation
+    running-stddev: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Running/expanding count (non-null)
+    running-count: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Running product
+    running-product: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Array Comparison Operations (Phase 18.7) ==========
+
+    /// Check if two arrays are equal element-wise (returns boolean array)
+    arrays-equal: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if all elements are equal between arrays
+    arrays-all-equal: func(left: borrow<array>, right: borrow<array>) -> result<bool, arrow-error>;
+
+    /// Check if any elements are equal between arrays
+    arrays-any-equal: func(left: borrow<array>, right: borrow<array>) -> result<bool, arrow-error>;
+
+    /// Element-wise minimum of two arrays
+    element-min: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Element-wise maximum of two arrays
+    element-max: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Clip array values to min/max range
+    clip: func(arr: borrow<array>, min: option<f64>, max: option<f64>) -> result<array, arrow-error>;
 }
