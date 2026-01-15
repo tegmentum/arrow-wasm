@@ -1964,4 +1964,129 @@ interface compute {
 
     /// Compute consecutive differences
     consecutive-diff: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Struct/Nested Data Operations (Phase 17.1) ==========
+
+    /// Extract a field from a struct array
+    struct-field: func(arr: borrow<array>, field-name: string) -> result<array, arrow-error>;
+
+    /// Get all field names from a struct array
+    struct-field-names: func(arr: borrow<array>) -> result<list<string>, arrow-error>;
+
+    /// Flatten a struct array into separate columns in a record batch
+    struct-flatten: func(arr: borrow<array>, prefix: option<string>) -> result<record-batch, arrow-error>;
+
+    /// Create a struct array from multiple arrays
+    struct-from-arrays: func(arrays: list<borrow<array>>, names: list<string>) -> result<array, arrow-error>;
+
+    /// ========== JSON Operations (Phase 17.2) ==========
+
+    /// Extract a value from JSON strings using path syntax (e.g., "field.nested")
+    json-extract: func(arr: borrow<array>, path: string) -> result<array, arrow-error>;
+
+    /// Convert array to JSON strings
+    to-json-strings: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if strings are valid JSON
+    is-valid-json: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Array Slicing & Manipulation (Phase 17.3) ==========
+
+    /// Slice array elements (like Python slicing with start:stop:step)
+    array-slice: func(arr: borrow<array>, start: option<s64>, stop: option<s64>, step: option<s64>) -> result<array, arrow-error>;
+
+    /// Concatenate multiple arrays vertically
+    array-concat: func(arrays: list<borrow<array>>) -> result<array, arrow-error>;
+
+    /// Repeat array elements n times
+    array-repeat: func(arr: borrow<array>, n: u32) -> result<array, arrow-error>;
+
+    /// Interleave multiple arrays element by element
+    array-interleave: func(arrays: list<borrow<array>>) -> result<array, arrow-error>;
+
+    /// Flatten nested list array by one level
+    list-flatten: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get unique values preserving first occurrence order
+    array-unique-ordered: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Data Sketches (Phase 17.4) ==========
+
+    /// Estimate cardinality using HyperLogLog
+    hyperloglog-count: func(arr: borrow<array>, precision: option<u8>) -> result<u64, arrow-error>;
+
+    /// Create HyperLogLog sketch as binary
+    hyperloglog-sketch: func(arr: borrow<array>, precision: option<u8>) -> result<list<u8>, arrow-error>;
+
+    /// Merge HyperLogLog sketches
+    hyperloglog-merge: func(sketches: list<list<u8>>) -> result<list<u8>, arrow-error>;
+
+    /// Estimate count from HyperLogLog sketch
+    hyperloglog-estimate: func(sketch: list<u8>) -> result<u64, arrow-error>;
+
+    /// Create Bloom filter from array
+    bloom-filter-create: func(arr: borrow<array>, expected-items: u64, false-positive-rate: f64) -> result<list<u8>, arrow-error>;
+
+    /// Check membership in Bloom filter
+    bloom-filter-contains: func(filter: list<u8>, arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Merge Bloom filters (must have same size)
+    bloom-filter-merge: func(filters: list<list<u8>>) -> result<list<u8>, arrow-error>;
+
+    /// ========== Hex & Binary Operations (Phase 17.5) ==========
+
+    /// Encode binary to hex string
+    hex-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Decode hex string to binary
+    hex-decode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// XOR two binary arrays element-wise
+    binary-xor: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Count set bits (population count) in integer array
+    popcount: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Reverse bits in integer array
+    bit-reverse: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Count leading zeros in integer array
+    leading-zeros: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Count trailing zeros in integer array
+    trailing-zeros: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Geographic Distance (Phase 17.6) ==========
+
+    /// Haversine distance between lat/lon pairs in kilometers
+    haversine-distance: func(lat1: borrow<array>, lon1: borrow<array>, lat2: borrow<array>, lon2: borrow<array>) -> result<array, arrow-error>;
+
+    /// Haversine distance from a single point to array of points
+    haversine-distance-from-point: func(lat: f64, lon: f64, lats: borrow<array>, lons: borrow<array>) -> result<array, arrow-error>;
+
+    /// Bearing between two points in degrees (0=North, 90=East)
+    bearing: func(lat1: borrow<array>, lon1: borrow<array>, lat2: borrow<array>, lon2: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if points are within radius of a center point
+    points-within-radius: func(center-lat: f64, center-lon: f64, lats: borrow<array>, lons: borrow<array>, radius-km: f64) -> result<array, arrow-error>;
+
+    /// ========== Data Integrity & Checksums (Phase 17.7) ==========
+
+    /// Compute Adler-32 checksum for string/binary array
+    adler32: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Compute XXHash64 (fast non-crypto hash)
+    xxhash64: func(arr: borrow<array>, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// Verify array has no duplicate values
+    verify-unique: func(arr: borrow<array>) -> result<bool, arrow-error>;
+
+    /// Verify array is sorted
+    verify-sorted: func(arr: borrow<array>, ascending: bool) -> result<bool, arrow-error>;
+
+    /// Verify array values are within range
+    verify-range: func(arr: borrow<array>, min: f64, max: f64) -> result<bool, arrow-error>;
+
+    /// Count constraint violations (nulls, out of range, duplicates)
+    count-violations: func(arr: borrow<array>, allow-nulls: bool, min: option<f64>, max: option<f64>) -> result<u64, arrow-error>;
 }

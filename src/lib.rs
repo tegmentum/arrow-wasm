@@ -7760,6 +7760,332 @@ fn jaro_winkler_similarity(s1: &str, s2: &str) -> f64 {
 }
 
 // ============================================================================
+// Phase 17 Helper Functions
+// ============================================================================
+
+/// Extract value from JSON string using path parts
+fn extract_json_path(json_str: &str, path_parts: &[&str]) -> Option<String> {
+    // Simple JSON path extraction - handles basic object access
+    let mut current = json_str.trim();
+
+    for part in path_parts {
+        if part.is_empty() {
+            continue;
+        }
+
+        // Find the key in the JSON
+        let key_pattern = format!("\"{}\"", part);
+        if let Some(pos) = current.find(&key_pattern) {
+            let after_key = &current[pos + key_pattern.len()..];
+            // Skip whitespace and colon
+            let value_start = after_key.find(':')? + 1;
+            let value_str = after_key[value_start..].trim_start();
+
+            // Determine value type and extract
+            if value_str.starts_with('"') {
+                // String value
+                if let Some(end) = value_str[1..].find('"') {
+                    current = &value_str[1..end + 1];
+                } else {
+                    return None;
+                }
+            } else if value_str.starts_with('{') {
+                // Object - find matching brace
+                let mut depth = 0;
+                let mut end = 0;
+                for (i, c) in value_str.char_indices() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = i + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                current = &value_str[..end];
+            } else if value_str.starts_with('[') {
+                // Array
+                let mut depth = 0;
+                let mut end = 0;
+                for (i, c) in value_str.char_indices() {
+                    match c {
+                        '[' => depth += 1,
+                        ']' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = i + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                current = &value_str[..end];
+            } else {
+                // Number, boolean, null
+                let end = value_str.find(|c: char| c == ',' || c == '}' || c == ']')
+                    .unwrap_or(value_str.len());
+                current = value_str[..end].trim();
+            }
+        } else {
+            return None;
+        }
+    }
+
+    Some(current.to_string())
+}
+
+/// Convert array value at index to JSON string
+fn array_value_to_json(arr: &dyn arrow_array::Array, i: usize) -> String {
+    if arr.is_null(i) {
+        return "null".to_string();
+    }
+
+    if let Some(str_arr) = arr.as_any().downcast_ref::<arrow_array::StringArray>() {
+        format!("\"{}\"", str_arr.value(i).replace('"', "\\\""))
+    } else if let Some(i64_arr) = arr.as_any().downcast_ref::<arrow_array::Int64Array>() {
+        i64_arr.value(i).to_string()
+    } else if let Some(f64_arr) = arr.as_any().downcast_ref::<arrow_array::Float64Array>() {
+        f64_arr.value(i).to_string()
+    } else if let Some(bool_arr) = arr.as_any().downcast_ref::<arrow_array::BooleanArray>() {
+        bool_arr.value(i).to_string()
+    } else if let Some(i32_arr) = arr.as_any().downcast_ref::<arrow_array::Int32Array>() {
+        i32_arr.value(i).to_string()
+    } else if let Some(f32_arr) = arr.as_any().downcast_ref::<arrow_array::Float32Array>() {
+        f32_arr.value(i).to_string()
+    } else {
+        "null".to_string()
+    }
+}
+
+/// Check if string is valid JSON
+fn is_valid_json_string(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() {
+        return false;
+    }
+
+    // Simple validation - check balanced braces/brackets and basic structure
+    let first = s.chars().next();
+    let last = s.chars().last();
+
+    match (first, last) {
+        (Some('{'), Some('}')) | (Some('['), Some(']')) => {
+            let mut depth_brace = 0i32;
+            let mut depth_bracket = 0i32;
+            let mut in_string = false;
+            let mut prev_escape = false;
+
+            for c in s.chars() {
+                if prev_escape {
+                    prev_escape = false;
+                    continue;
+                }
+                match c {
+                    '\\' if in_string => prev_escape = true,
+                    '"' => in_string = !in_string,
+                    '{' if !in_string => depth_brace += 1,
+                    '}' if !in_string => depth_brace -= 1,
+                    '[' if !in_string => depth_bracket += 1,
+                    ']' if !in_string => depth_bracket -= 1,
+                    _ => {}
+                }
+                if depth_brace < 0 || depth_bracket < 0 {
+                    return false;
+                }
+            }
+            depth_brace == 0 && depth_bracket == 0
+        }
+        (Some('"'), Some('"')) => true, // String
+        _ => {
+            // Check for number, boolean, null
+            s == "true" || s == "false" || s == "null" || s.parse::<f64>().is_ok()
+        }
+    }
+}
+
+/// Hash a value at a given index
+fn hash_value_at_index(arr: &Arc<dyn arrow_array::Array>, i: usize) -> u64 {
+    if arr.is_null(i) {
+        return 0;
+    }
+
+    if let Some(str_arr) = arr.as_any().downcast_ref::<arrow_array::StringArray>() {
+        fnv1a_hash(str_arr.value(i).as_bytes())
+    } else if let Some(i64_arr) = arr.as_any().downcast_ref::<arrow_array::Int64Array>() {
+        fnv1a_hash(&i64_arr.value(i).to_le_bytes())
+    } else if let Some(i32_arr) = arr.as_any().downcast_ref::<arrow_array::Int32Array>() {
+        fnv1a_hash(&i32_arr.value(i).to_le_bytes())
+    } else if let Some(f64_arr) = arr.as_any().downcast_ref::<arrow_array::Float64Array>() {
+        fnv1a_hash(&f64_arr.value(i).to_bits().to_le_bytes())
+    } else if let Some(bin_arr) = arr.as_any().downcast_ref::<arrow_array::BinaryArray>() {
+        fnv1a_hash(bin_arr.value(i))
+    } else {
+        fnv1a_hash(&(i as u64).to_le_bytes())
+    }
+}
+
+/// Convert bytes to hex string
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    const HEX_CHARS: &[u8] = b"0123456789abcdef";
+    let mut result = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        result.push(HEX_CHARS[(byte >> 4) as usize] as char);
+        result.push(HEX_CHARS[(byte & 0xf) as usize] as char);
+    }
+    result
+}
+
+/// Convert hex string to bytes
+fn hex_to_bytes(hex: &str) -> Option<Vec<u8>> {
+    let hex = hex.trim();
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+
+    let mut result = Vec::with_capacity(hex.len() / 2);
+    let mut chars = hex.chars();
+
+    while let (Some(h), Some(l)) = (chars.next(), chars.next()) {
+        let high = h.to_digit(16)?;
+        let low = l.to_digit(16)?;
+        result.push((high * 16 + low) as u8);
+    }
+
+    Some(result)
+}
+
+/// Haversine distance in kilometers
+fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    const EARTH_RADIUS_KM: f64 = 6371.0;
+
+    let lat1_rad = lat1.to_radians();
+    let lat2_rad = lat2.to_radians();
+    let dlat = (lat2 - lat1).to_radians();
+    let dlon = (lon2 - lon1).to_radians();
+
+    let a = (dlat / 2.0).sin().powi(2) + lat1_rad.cos() * lat2_rad.cos() * (dlon / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().asin();
+
+    EARTH_RADIUS_KM * c
+}
+
+/// Compute bearing in degrees (0-360, 0=North)
+fn compute_bearing(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let lat1_rad = lat1.to_radians();
+    let lat2_rad = lat2.to_radians();
+    let dlon = (lon2 - lon1).to_radians();
+
+    let y = dlon.sin() * lat2_rad.cos();
+    let x = lat1_rad.cos() * lat2_rad.sin() - lat1_rad.sin() * lat2_rad.cos() * dlon.cos();
+
+    let bearing = y.atan2(x).to_degrees();
+    (bearing + 360.0) % 360.0
+}
+
+/// Compute Adler-32 checksum
+fn compute_adler32(data: &[u8]) -> u32 {
+    const MOD_ADLER: u32 = 65521;
+    let mut a: u32 = 1;
+    let mut b: u32 = 0;
+
+    for byte in data {
+        a = (a + *byte as u32) % MOD_ADLER;
+        b = (b + a) % MOD_ADLER;
+    }
+
+    (b << 16) | a
+}
+
+/// Compute XXHash64 (simplified version)
+fn compute_xxhash64(data: &[u8], seed: u64) -> u64 {
+    const PRIME64_1: u64 = 0x9E3779B185EBCA87;
+    const PRIME64_2: u64 = 0xC2B2AE3D27D4EB4F;
+    const PRIME64_3: u64 = 0x165667B19E3779F9;
+    const PRIME64_4: u64 = 0x85EBCA77C2B2AE63;
+    const PRIME64_5: u64 = 0x27D4EB2F165667C5;
+
+    let len = data.len();
+    let mut h64: u64;
+
+    if len >= 32 {
+        let mut v1 = seed.wrapping_add(PRIME64_1).wrapping_add(PRIME64_2);
+        let mut v2 = seed.wrapping_add(PRIME64_2);
+        let mut v3 = seed;
+        let mut v4 = seed.wrapping_sub(PRIME64_1);
+
+        let mut i = 0;
+        while i + 32 <= len {
+            let k1 = u64::from_le_bytes(data[i..i+8].try_into().unwrap_or([0; 8]));
+            v1 = v1.wrapping_add(k1.wrapping_mul(PRIME64_2)).rotate_left(31).wrapping_mul(PRIME64_1);
+
+            let k2 = u64::from_le_bytes(data[i+8..i+16].try_into().unwrap_or([0; 8]));
+            v2 = v2.wrapping_add(k2.wrapping_mul(PRIME64_2)).rotate_left(31).wrapping_mul(PRIME64_1);
+
+            let k3 = u64::from_le_bytes(data[i+16..i+24].try_into().unwrap_or([0; 8]));
+            v3 = v3.wrapping_add(k3.wrapping_mul(PRIME64_2)).rotate_left(31).wrapping_mul(PRIME64_1);
+
+            let k4 = u64::from_le_bytes(data[i+24..i+32].try_into().unwrap_or([0; 8]));
+            v4 = v4.wrapping_add(k4.wrapping_mul(PRIME64_2)).rotate_left(31).wrapping_mul(PRIME64_1);
+
+            i += 32;
+        }
+
+        h64 = v1.rotate_left(1)
+            .wrapping_add(v2.rotate_left(7))
+            .wrapping_add(v3.rotate_left(12))
+            .wrapping_add(v4.rotate_left(18));
+
+        h64 = (h64 ^ v1.wrapping_mul(PRIME64_2).rotate_left(31).wrapping_mul(PRIME64_1))
+            .wrapping_mul(PRIME64_1).wrapping_add(PRIME64_4);
+        h64 = (h64 ^ v2.wrapping_mul(PRIME64_2).rotate_left(31).wrapping_mul(PRIME64_1))
+            .wrapping_mul(PRIME64_1).wrapping_add(PRIME64_4);
+        h64 = (h64 ^ v3.wrapping_mul(PRIME64_2).rotate_left(31).wrapping_mul(PRIME64_1))
+            .wrapping_mul(PRIME64_1).wrapping_add(PRIME64_4);
+        h64 = (h64 ^ v4.wrapping_mul(PRIME64_2).rotate_left(31).wrapping_mul(PRIME64_1))
+            .wrapping_mul(PRIME64_1).wrapping_add(PRIME64_4);
+    } else {
+        h64 = seed.wrapping_add(PRIME64_5);
+    }
+
+    h64 = h64.wrapping_add(len as u64);
+
+    // Process remaining bytes
+    let remaining = &data[len - (len % 32)..];
+    let mut i = 0;
+    while i + 8 <= remaining.len() {
+        let k1 = u64::from_le_bytes(remaining[i..i+8].try_into().unwrap_or([0; 8]));
+        h64 = (h64 ^ k1.wrapping_mul(PRIME64_2).rotate_left(31).wrapping_mul(PRIME64_1))
+            .rotate_left(27).wrapping_mul(PRIME64_1).wrapping_add(PRIME64_4);
+        i += 8;
+    }
+
+    while i + 4 <= remaining.len() {
+        let k1 = u32::from_le_bytes(remaining[i..i+4].try_into().unwrap_or([0; 4])) as u64;
+        h64 = (h64 ^ k1.wrapping_mul(PRIME64_1)).rotate_left(23).wrapping_mul(PRIME64_2).wrapping_add(PRIME64_3);
+        i += 4;
+    }
+
+    while i < remaining.len() {
+        h64 = (h64 ^ remaining[i] as u64 * PRIME64_5).rotate_left(11).wrapping_mul(PRIME64_1);
+        i += 1;
+    }
+
+    // Final mix
+    h64 ^= h64 >> 33;
+    h64 = h64.wrapping_mul(PRIME64_2);
+    h64 ^= h64 >> 29;
+    h64 = h64.wrapping_mul(PRIME64_3);
+    h64 ^= h64 >> 32;
+
+    h64
+}
+
+// ============================================================================
 // Compute implementation (stub - to be expanded)
 // ============================================================================
 
@@ -20832,6 +21158,836 @@ impl compute::Guest for Component {
 
         let result_arr: arrow_array::Float64Array = result.into_iter().collect();
         Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========== Phase 17.1: Struct/Nested Data Operations ==========
+
+    fn struct_field(arr: arrays::ArrayBorrow<'_>, field_name: String) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let struct_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StructArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected struct array".to_string()))?;
+
+        let field_idx = struct_arr.fields().iter().position(|f| f.name() == &field_name)
+            .ok_or_else(|| compute::ArrowError::InvalidArgument(format!("Field '{}' not found", field_name)))?;
+
+        let field_arr = struct_arr.column(field_idx).clone();
+        Ok(arrays::Array::new(ArrayImpl { inner: field_arr }))
+    }
+
+    fn struct_field_names(arr: arrays::ArrayBorrow<'_>) -> Result<Vec<String>, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let struct_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StructArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected struct array".to_string()))?;
+
+        Ok(struct_arr.fields().iter().map(|f| f.name().clone()).collect())
+    }
+
+    fn struct_flatten(arr: arrays::ArrayBorrow<'_>, prefix: Option<String>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let struct_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StructArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected struct array".to_string()))?;
+
+        let prefix = prefix.unwrap_or_default();
+        let mut fields = Vec::new();
+        let mut columns: Vec<Arc<dyn arrow_array::Array>> = Vec::new();
+
+        for (i, field) in struct_arr.fields().iter().enumerate() {
+            let name = if prefix.is_empty() {
+                field.name().clone()
+            } else {
+                format!("{}_{}", prefix, field.name())
+            };
+            fields.push(arrow_schema::Field::new(&name, field.data_type().clone(), field.is_nullable()));
+            columns.push(struct_arr.column(i).clone());
+        }
+
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+        let batch = ArrowRecordBatch::try_new(schema, columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: batch }))
+    }
+
+    fn struct_from_arrays(arrays: Vec<arrays::ArrayBorrow<'_>>, names: Vec<String>) -> Result<arrays::Array, compute::ArrowError> {
+        if arrays.len() != names.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays and names must have same length".to_string()));
+        }
+        if arrays.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("Need at least one array".to_string()));
+        }
+
+        let mut struct_arrays: Vec<(Arc<arrow_schema::Field>, Arc<dyn arrow_array::Array>)> = Vec::new();
+
+        for (arr, name) in arrays.iter().zip(names.iter()) {
+            let arr_impl = arr.get::<ArrayImpl>();
+            let field = Arc::new(arrow_schema::Field::new(name, arr_impl.inner.data_type().clone(), true));
+            struct_arrays.push((field, arr_impl.inner.clone()));
+        }
+
+        let struct_arr = arrow_array::StructArray::from(struct_arrays);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(struct_arr) }))
+    }
+
+    // ========== Phase 17.2: JSON Operations ==========
+
+    fn json_extract(arr: arrays::ArrayBorrow<'_>, path: String) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let path_parts: Vec<&str> = path.trim_start_matches('$').trim_start_matches('.').split('.').collect();
+
+        let result: Vec<Option<String>> = (0..str_arr.len())
+            .map(|i| {
+                if str_arr.is_null(i) {
+                    return None;
+                }
+                let json_str = str_arr.value(i);
+                extract_json_path(json_str, &path_parts)
+            })
+            .collect();
+
+        let result_arr: arrow_array::StringArray = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn to_json_strings(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let inner = &arr_impl.inner;
+
+        let result: Vec<Option<String>> = (0..inner.len())
+            .map(|i| {
+                if inner.is_null(i) {
+                    Some("null".to_string())
+                } else {
+                    Some(array_value_to_json(inner.as_ref(), i))
+                }
+            })
+            .collect();
+
+        let result_arr: arrow_array::StringArray = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn is_valid_json(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let result: Vec<Option<bool>> = (0..str_arr.len())
+            .map(|i| {
+                if str_arr.is_null(i) {
+                    None
+                } else {
+                    Some(is_valid_json_string(str_arr.value(i)))
+                }
+            })
+            .collect();
+
+        let result_arr: arrow_array::BooleanArray = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========== Phase 17.3: Array Slicing & Manipulation ==========
+
+    fn array_slice(arr: arrays::ArrayBorrow<'_>, start: Option<i64>, stop: Option<i64>, step: Option<i64>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let len = arr_impl.inner.len() as i64;
+        let step = step.unwrap_or(1);
+
+        if step == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Step cannot be zero".to_string()));
+        }
+
+        // Handle Python-style negative indices
+        let normalize = |idx: i64, default: i64| -> i64 {
+            if idx < 0 { (len + idx).max(0) } else { idx.min(len) }
+        };
+
+        let (start, stop) = if step > 0 {
+            (normalize(start.unwrap_or(0), 0), normalize(stop.unwrap_or(len), len))
+        } else {
+            (normalize(start.unwrap_or(len - 1), len - 1), normalize(stop.unwrap_or(-len - 1), -1))
+        };
+
+        // Collect indices
+        let mut indices: Vec<u64> = Vec::new();
+        let mut i = start;
+        while (step > 0 && i < stop) || (step < 0 && i > stop) {
+            if i >= 0 && i < len {
+                indices.push(i as u64);
+            }
+            i += step;
+        }
+
+        let indices_arr = arrow_array::UInt64Array::from(indices);
+        let result = arrow_select::take::take(arr_impl.inner.as_ref(), &indices_arr, None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    fn array_concat(arrays: Vec<arrays::ArrayBorrow<'_>>) -> Result<arrays::Array, compute::ArrowError> {
+        if arrays.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("Need at least one array".to_string()));
+        }
+
+        let arrow_arrays: Vec<&dyn arrow_array::Array> = arrays.iter()
+            .map(|a| a.get::<ArrayImpl>().inner.as_ref())
+            .collect();
+
+        let result = arrow_select::concat::concat(&arrow_arrays)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    fn array_repeat(arr: arrays::ArrayBorrow<'_>, n: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if n == 0 {
+            // Return empty array of same type
+            return Ok(arrays::Array::new(ArrayImpl { inner: arr_impl.inner.slice(0, 0) }));
+        }
+
+        let arrow_arrays: Vec<&dyn arrow_array::Array> = (0..n)
+            .map(|_| arr_impl.inner.as_ref())
+            .collect();
+
+        let result = arrow_select::concat::concat(&arrow_arrays)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    fn array_interleave(arrays: Vec<arrays::ArrayBorrow<'_>>) -> Result<arrays::Array, compute::ArrowError> {
+        if arrays.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("Need at least one array".to_string()));
+        }
+
+        let arr_impls: Vec<&ArrayImpl> = arrays.iter().map(|a| a.get::<ArrayImpl>()).collect();
+        let min_len = arr_impls.iter().map(|a| a.inner.len()).min().unwrap_or(0);
+        let num_arrays = arr_impls.len();
+
+        // Build indices for interleaving
+        let mut indices: Vec<(usize, u64)> = Vec::with_capacity(min_len * num_arrays);
+        for i in 0..min_len {
+            for (arr_idx, _) in arr_impls.iter().enumerate() {
+                indices.push((arr_idx, i as u64));
+            }
+        }
+
+        // Use interleave from arrow_select
+        let arrow_arrays: Vec<&dyn arrow_array::Array> = arr_impls.iter()
+            .map(|a| a.inner.as_ref())
+            .collect();
+
+        let result = arrow_select::interleave::interleave(&arrow_arrays, &indices.iter().map(|(a, i)| (*a, *i as usize)).collect::<Vec<_>>())
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    fn list_flatten(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(list_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::ListArray>() {
+            Ok(arrays::Array::new(ArrayImpl { inner: list_arr.values().clone() }))
+        } else if let Some(list_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::LargeListArray>() {
+            Ok(arrays::Array::new(ArrayImpl { inner: list_arr.values().clone() }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Expected list array".to_string()))
+        }
+    }
+
+    fn array_unique_ordered(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let inner = &arr_impl.inner;
+
+        // Use HashSet to track seen values, preserve order
+        use std::collections::HashSet;
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut indices: Vec<u64> = Vec::new();
+
+        for i in 0..inner.len() {
+            let key = if inner.is_null(i) {
+                "NULL".to_string()
+            } else {
+                extract_string_at_index(inner, i).unwrap_or_else(|| format!("idx_{}", i))
+            };
+
+            if seen.insert(key) {
+                indices.push(i as u64);
+            }
+        }
+
+        let indices_arr = arrow_array::UInt64Array::from(indices);
+        let result = arrow_select::take::take(inner.as_ref(), &indices_arr, None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    // ========== Phase 17.4: Data Sketches ==========
+
+    fn hyperloglog_count(arr: arrays::ArrayBorrow<'_>, precision: Option<u8>) -> Result<u64, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let precision = precision.unwrap_or(14).min(18).max(4);
+        let num_registers = 1usize << precision;
+
+        let mut registers = vec![0u8; num_registers];
+
+        for i in 0..arr_impl.inner.len() {
+            if !arr_impl.inner.is_null(i) {
+                let hash = hash_value_at_index(&arr_impl.inner, i);
+                let idx = (hash as usize) & (num_registers - 1);
+                let w = hash >> precision;
+                let rho = (w.leading_zeros() as u8 + 1).min(64 - precision);
+                registers[idx] = registers[idx].max(rho);
+            }
+        }
+
+        // Estimate using harmonic mean
+        let alpha = match precision {
+            4 => 0.673,
+            5 => 0.697,
+            6 => 0.709,
+            _ => 0.7213 / (1.0 + 1.079 / num_registers as f64),
+        };
+
+        let sum: f64 = registers.iter().map(|&r| 2.0_f64.powi(-(r as i32))).sum();
+        let estimate = alpha * (num_registers as f64).powi(2) / sum;
+
+        Ok(estimate.round() as u64)
+    }
+
+    fn hyperloglog_sketch(arr: arrays::ArrayBorrow<'_>, precision: Option<u8>) -> Result<Vec<u8>, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let precision = precision.unwrap_or(14).min(18).max(4);
+        let num_registers = 1usize << precision;
+
+        let mut registers = vec![0u8; num_registers];
+
+        for i in 0..arr_impl.inner.len() {
+            if !arr_impl.inner.is_null(i) {
+                let hash = hash_value_at_index(&arr_impl.inner, i);
+                let idx = (hash as usize) & (num_registers - 1);
+                let w = hash >> precision;
+                let rho = (w.leading_zeros() as u8 + 1).min(64 - precision);
+                registers[idx] = registers[idx].max(rho);
+            }
+        }
+
+        // Prepend precision byte
+        let mut result = vec![precision];
+        result.extend(registers);
+        Ok(result)
+    }
+
+    fn hyperloglog_merge(sketches: Vec<Vec<u8>>) -> Result<Vec<u8>, compute::ArrowError> {
+        if sketches.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("Need at least one sketch".to_string()));
+        }
+
+        let precision = sketches[0].first().copied().unwrap_or(14);
+        let num_registers = 1usize << precision;
+
+        // Verify all sketches have same precision
+        for sketch in &sketches {
+            if sketch.first().copied() != Some(precision) {
+                return Err(compute::ArrowError::InvalidArgument("All sketches must have same precision".to_string()));
+            }
+        }
+
+        let mut merged = vec![0u8; num_registers];
+        for sketch in &sketches {
+            for (i, &r) in sketch.iter().skip(1).take(num_registers).enumerate() {
+                merged[i] = merged[i].max(r);
+            }
+        }
+
+        let mut result = vec![precision];
+        result.extend(merged);
+        Ok(result)
+    }
+
+    fn hyperloglog_estimate(sketch: Vec<u8>) -> Result<u64, compute::ArrowError> {
+        if sketch.is_empty() {
+            return Ok(0);
+        }
+
+        let precision = sketch[0];
+        let num_registers = 1usize << precision;
+
+        let registers: Vec<u8> = sketch.iter().skip(1).take(num_registers).cloned().collect();
+
+        let alpha = match precision {
+            4 => 0.673,
+            5 => 0.697,
+            6 => 0.709,
+            _ => 0.7213 / (1.0 + 1.079 / num_registers as f64),
+        };
+
+        let sum: f64 = registers.iter().map(|&r| 2.0_f64.powi(-(r as i32))).sum();
+        let estimate = alpha * (num_registers as f64).powi(2) / sum;
+
+        Ok(estimate.round() as u64)
+    }
+
+    fn bloom_filter_create(arr: arrays::ArrayBorrow<'_>, expected_items: u64, false_positive_rate: f64) -> Result<Vec<u8>, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        // Calculate optimal size and hash count
+        let n = expected_items.max(1) as f64;
+        let p = false_positive_rate.max(0.0001).min(0.5);
+        let m = (-(n * p.ln()) / (2.0_f64.ln().powi(2))).ceil() as usize;
+        let k = ((m as f64 / n) * 2.0_f64.ln()).ceil() as usize;
+
+        let num_bytes = (m + 7) / 8;
+        let mut filter = vec![0u8; num_bytes + 2]; // +2 for k stored at start
+
+        filter[0] = k as u8;
+        filter[1] = (k >> 8) as u8;
+
+        for i in 0..arr_impl.inner.len() {
+            if !arr_impl.inner.is_null(i) {
+                let hash = hash_value_at_index(&arr_impl.inner, i);
+                let hash2 = hash.wrapping_mul(0x9e3779b97f4a7c15);
+
+                for j in 0..k {
+                    let combined = hash.wrapping_add((j as u64).wrapping_mul(hash2));
+                    let bit_idx = (combined as usize) % m;
+                    let byte_idx = bit_idx / 8 + 2;
+                    let bit_pos = bit_idx % 8;
+                    filter[byte_idx] |= 1 << bit_pos;
+                }
+            }
+        }
+
+        Ok(filter)
+    }
+
+    fn bloom_filter_contains(filter: Vec<u8>, arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if filter.len() < 2 {
+            return Err(compute::ArrowError::InvalidArgument("Invalid bloom filter".to_string()));
+        }
+
+        let k = (filter[0] as usize) | ((filter[1] as usize) << 8);
+        let m = (filter.len() - 2) * 8;
+
+        let result: Vec<Option<bool>> = (0..arr_impl.inner.len())
+            .map(|i| {
+                if arr_impl.inner.is_null(i) {
+                    return None;
+                }
+
+                let hash = hash_value_at_index(&arr_impl.inner, i);
+                let hash2 = hash.wrapping_mul(0x9e3779b97f4a7c15);
+
+                for j in 0..k {
+                    let combined = hash.wrapping_add((j as u64).wrapping_mul(hash2));
+                    let bit_idx = (combined as usize) % m;
+                    let byte_idx = bit_idx / 8 + 2;
+                    let bit_pos = bit_idx % 8;
+
+                    if byte_idx >= filter.len() || (filter[byte_idx] & (1 << bit_pos)) == 0 {
+                        return Some(false);
+                    }
+                }
+
+                Some(true)
+            })
+            .collect();
+
+        let result_arr: arrow_array::BooleanArray = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn bloom_filter_merge(filters: Vec<Vec<u8>>) -> Result<Vec<u8>, compute::ArrowError> {
+        if filters.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("Need at least one filter".to_string()));
+        }
+
+        let size = filters[0].len();
+        for filter in &filters {
+            if filter.len() != size {
+                return Err(compute::ArrowError::InvalidArgument("All filters must have same size".to_string()));
+            }
+        }
+
+        let mut result = filters[0].clone();
+        for filter in filters.iter().skip(1) {
+            for (i, &byte) in filter.iter().enumerate().skip(2) {
+                result[i] |= byte;
+            }
+        }
+
+        Ok(result)
+    }
+
+    // ========== Phase 17.5: Hex & Binary Operations ==========
+
+    fn hex_encode(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(bin_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::BinaryArray>() {
+            let result: Vec<Option<String>> = (0..bin_arr.len())
+                .map(|i| {
+                    if bin_arr.is_null(i) { None }
+                    else { Some(bytes_to_hex(bin_arr.value(i))) }
+                })
+                .collect();
+            let result_arr: arrow_array::StringArray = result.into_iter().collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+        } else if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let result: Vec<Option<String>> = (0..str_arr.len())
+                .map(|i| {
+                    if str_arr.is_null(i) { None }
+                    else { Some(bytes_to_hex(str_arr.value(i).as_bytes())) }
+                })
+                .collect();
+            let result_arr: arrow_array::StringArray = result.into_iter().collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Expected binary or string array".to_string()))
+        }
+    }
+
+    fn hex_decode(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let result: Vec<Option<Vec<u8>>> = (0..str_arr.len())
+            .map(|i| {
+                if str_arr.is_null(i) { None }
+                else { hex_to_bytes(str_arr.value(i)) }
+            })
+            .collect();
+
+        let result_arr: arrow_array::BinaryArray = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn binary_xor(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_impl = left.get::<ArrayImpl>();
+        let right_impl = right.get::<ArrayImpl>();
+
+        let left_bin = left_impl.inner.as_any().downcast_ref::<arrow_array::BinaryArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected binary array".to_string()))?;
+        let right_bin = right_impl.inner.as_any().downcast_ref::<arrow_array::BinaryArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected binary array".to_string()))?;
+
+        if left_bin.len() != right_bin.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        let result: Vec<Option<Vec<u8>>> = (0..left_bin.len())
+            .map(|i| {
+                if left_bin.is_null(i) || right_bin.is_null(i) { None }
+                else {
+                    let l = left_bin.value(i);
+                    let r = right_bin.value(i);
+                    let min_len = l.len().min(r.len());
+                    let xored: Vec<u8> = l.iter().zip(r.iter()).take(min_len).map(|(a, b)| a ^ b).collect();
+                    Some(xored)
+                }
+            })
+            .collect();
+
+        let result_arr: arrow_array::BinaryArray = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn popcount(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(i64_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let result: arrow_array::UInt32Array = i64_arr.iter()
+                .map(|v| v.map(|x| x.count_ones()))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(u64_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::UInt64Array>() {
+            let result: arrow_array::UInt32Array = u64_arr.iter()
+                .map(|v| v.map(|x| x.count_ones()))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(i32_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            let result: arrow_array::UInt32Array = i32_arr.iter()
+                .map(|v| v.map(|x| x.count_ones()))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(u32_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::UInt32Array>() {
+            let result: arrow_array::UInt32Array = u32_arr.iter()
+                .map(|v| v.map(|x| x.count_ones()))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Expected integer array".to_string()))
+        }
+    }
+
+    fn bit_reverse(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(u64_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::UInt64Array>() {
+            let result: arrow_array::UInt64Array = u64_arr.iter()
+                .map(|v| v.map(|x| x.reverse_bits()))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(u32_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::UInt32Array>() {
+            let result: arrow_array::UInt32Array = u32_arr.iter()
+                .map(|v| v.map(|x| x.reverse_bits()))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Expected unsigned integer array".to_string()))
+        }
+    }
+
+    fn leading_zeros(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(u64_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::UInt64Array>() {
+            let result: arrow_array::UInt32Array = u64_arr.iter()
+                .map(|v| v.map(|x| x.leading_zeros()))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(u32_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::UInt32Array>() {
+            let result: arrow_array::UInt32Array = u32_arr.iter()
+                .map(|v| v.map(|x| x.leading_zeros()))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(i64_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let result: arrow_array::UInt32Array = i64_arr.iter()
+                .map(|v| v.map(|x| (x as u64).leading_zeros()))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Expected integer array".to_string()))
+        }
+    }
+
+    fn trailing_zeros(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(u64_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::UInt64Array>() {
+            let result: arrow_array::UInt32Array = u64_arr.iter()
+                .map(|v| v.map(|x| x.trailing_zeros()))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(u32_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::UInt32Array>() {
+            let result: arrow_array::UInt32Array = u32_arr.iter()
+                .map(|v| v.map(|x| x.trailing_zeros()))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(i64_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let result: arrow_array::UInt32Array = i64_arr.iter()
+                .map(|v| v.map(|x| (x as u64).trailing_zeros()))
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Expected integer array".to_string()))
+        }
+    }
+
+    // ========== Phase 17.6: Geographic Distance ==========
+
+    fn haversine_distance(lat1: arrays::ArrayBorrow<'_>, lon1: arrays::ArrayBorrow<'_>, lat2: arrays::ArrayBorrow<'_>, lon2: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let lat1_vals = collect_f64_values(&lat1.get::<ArrayImpl>().inner)?;
+        let lon1_vals = collect_f64_values(&lon1.get::<ArrayImpl>().inner)?;
+        let lat2_vals = collect_f64_values(&lat2.get::<ArrayImpl>().inner)?;
+        let lon2_vals = collect_f64_values(&lon2.get::<ArrayImpl>().inner)?;
+
+        let len = lat1_vals.len().min(lon1_vals.len()).min(lat2_vals.len()).min(lon2_vals.len());
+
+        let result: Vec<f64> = (0..len)
+            .map(|i| haversine_km(lat1_vals[i], lon1_vals[i], lat2_vals[i], lon2_vals[i]))
+            .collect();
+
+        let result_arr = arrow_array::Float64Array::from(result);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn haversine_distance_from_point(lat: f64, lon: f64, lats: arrays::ArrayBorrow<'_>, lons: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let lat_vals = collect_f64_values(&lats.get::<ArrayImpl>().inner)?;
+        let lon_vals = collect_f64_values(&lons.get::<ArrayImpl>().inner)?;
+
+        let len = lat_vals.len().min(lon_vals.len());
+
+        let result: Vec<f64> = (0..len)
+            .map(|i| haversine_km(lat, lon, lat_vals[i], lon_vals[i]))
+            .collect();
+
+        let result_arr = arrow_array::Float64Array::from(result);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn bearing(lat1: arrays::ArrayBorrow<'_>, lon1: arrays::ArrayBorrow<'_>, lat2: arrays::ArrayBorrow<'_>, lon2: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let lat1_vals = collect_f64_values(&lat1.get::<ArrayImpl>().inner)?;
+        let lon1_vals = collect_f64_values(&lon1.get::<ArrayImpl>().inner)?;
+        let lat2_vals = collect_f64_values(&lat2.get::<ArrayImpl>().inner)?;
+        let lon2_vals = collect_f64_values(&lon2.get::<ArrayImpl>().inner)?;
+
+        let len = lat1_vals.len().min(lon1_vals.len()).min(lat2_vals.len()).min(lon2_vals.len());
+
+        let result: Vec<f64> = (0..len)
+            .map(|i| compute_bearing(lat1_vals[i], lon1_vals[i], lat2_vals[i], lon2_vals[i]))
+            .collect();
+
+        let result_arr = arrow_array::Float64Array::from(result);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn points_within_radius(center_lat: f64, center_lon: f64, lats: arrays::ArrayBorrow<'_>, lons: arrays::ArrayBorrow<'_>, radius_km: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let lat_vals = collect_f64_values(&lats.get::<ArrayImpl>().inner)?;
+        let lon_vals = collect_f64_values(&lons.get::<ArrayImpl>().inner)?;
+
+        let len = lat_vals.len().min(lon_vals.len());
+
+        let result: Vec<bool> = (0..len)
+            .map(|i| haversine_km(center_lat, center_lon, lat_vals[i], lon_vals[i]) <= radius_km)
+            .collect();
+
+        let result_arr = arrow_array::BooleanArray::from(result);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========== Phase 17.7: Data Integrity & Checksums ==========
+
+    fn adler32(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let result: arrow_array::UInt32Array = (0..str_arr.len())
+                .map(|i| {
+                    if str_arr.is_null(i) { None }
+                    else { Some(compute_adler32(str_arr.value(i).as_bytes())) }
+                })
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(bin_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::BinaryArray>() {
+            let result: arrow_array::UInt32Array = (0..bin_arr.len())
+                .map(|i| {
+                    if bin_arr.is_null(i) { None }
+                    else { Some(compute_adler32(bin_arr.value(i))) }
+                })
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Expected string or binary array".to_string()))
+        }
+    }
+
+    fn xxhash64(arr: arrays::ArrayBorrow<'_>, seed: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let seed = seed.unwrap_or(0);
+
+        if let Some(str_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let result: arrow_array::UInt64Array = (0..str_arr.len())
+                .map(|i| {
+                    if str_arr.is_null(i) { None }
+                    else { Some(compute_xxhash64(str_arr.value(i).as_bytes(), seed)) }
+                })
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else if let Some(bin_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::BinaryArray>() {
+            let result: arrow_array::UInt64Array = (0..bin_arr.len())
+                .map(|i| {
+                    if bin_arr.is_null(i) { None }
+                    else { Some(compute_xxhash64(bin_arr.value(i), seed)) }
+                })
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Expected string or binary array".to_string()))
+        }
+    }
+
+    fn verify_unique(arr: arrays::ArrayBorrow<'_>) -> Result<bool, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        use std::collections::HashSet;
+
+        let mut seen: HashSet<String> = HashSet::new();
+
+        for i in 0..arr_impl.inner.len() {
+            let key = if arr_impl.inner.is_null(i) {
+                "NULL".to_string()
+            } else {
+                extract_string_at_index(&arr_impl.inner, i).unwrap_or_else(|| format!("idx_{}", i))
+            };
+
+            if !seen.insert(key) {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
+    fn verify_sorted(arr: arrays::ArrayBorrow<'_>, ascending: bool) -> Result<bool, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let mut prev: Option<f64> = None;
+        for val in values {
+            if let Some(curr) = val {
+                if let Some(p) = prev {
+                    if ascending && curr < p {
+                        return Ok(false);
+                    }
+                    if !ascending && curr > p {
+                        return Ok(false);
+                    }
+                }
+                prev = Some(curr);
+            }
+        }
+
+        Ok(true)
+    }
+
+    fn verify_range(arr: arrays::ArrayBorrow<'_>, min: f64, max: f64) -> Result<bool, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_f64_values(&arr_impl.inner)?;
+
+        for val in values {
+            if val < min || val > max {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
+    fn count_violations(arr: arrays::ArrayBorrow<'_>, allow_nulls: bool, min: Option<f64>, max: Option<f64>) -> Result<u64, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let mut count = 0u64;
+
+        for i in 0..arr_impl.inner.len() {
+            if arr_impl.inner.is_null(i) {
+                if !allow_nulls {
+                    count += 1;
+                }
+                continue;
+            }
+
+            // Try to get numeric value for range check
+            if let Ok(values) = collect_f64_values(&arr_impl.inner) {
+                if i < values.len() {
+                    let val = values[i];
+                    if let Some(min_val) = min {
+                        if val < min_val {
+                            count += 1;
+                            continue;
+                        }
+                    }
+                    if let Some(max_val) = max {
+                        if val > max_val {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(count)
     }
 }
 
