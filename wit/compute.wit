@@ -1645,4 +1645,182 @@ interface compute {
         lon: borrow<array>,
         precision: u8
     ) -> result<array, arrow-error>;
+
+    /// ========== Data Quality & Validation (Phase 15.1) ==========
+
+    /// Data profile statistics for a column
+    record column-profile {
+        /// Column name
+        name: string,
+        /// Total count
+        count: u64,
+        /// Null count
+        null-count: u64,
+        /// Distinct count (approximate)
+        distinct-count: u64,
+        /// Completeness ratio (1.0 - null_ratio)
+        completeness: f64,
+        /// For numeric: min value as string
+        min-value: option<string>,
+        /// For numeric: max value as string
+        max-value: option<string>,
+        /// For numeric: mean
+        mean: option<f64>,
+        /// For numeric: standard deviation
+        stddev: option<f64>,
+    }
+
+    /// Profile a single column
+    profile-column: func(arr: borrow<array>, name: string) -> result<column-profile, arrow-error>;
+
+    /// Profile all columns in a record batch
+    profile-batch: func(batch: borrow<record-batch>) -> result<list<column-profile>, arrow-error>;
+
+    /// Check if values match a regex pattern, returns match ratio
+    pattern-match-ratio: func(arr: borrow<array>, pattern: string) -> result<f64, arrow-error>;
+
+    /// Check for duplicate rows in a batch
+    duplicate-count: func(batch: borrow<record-batch>, columns: list<string>) -> result<u64, arrow-error>;
+
+    /// Get indices of duplicate rows
+    duplicate-indices: func(batch: borrow<record-batch>, columns: list<string>) -> result<array, arrow-error>;
+
+    /// ========== Statistical Hypothesis Testing (Phase 15.2) ==========
+
+    /// Result of a statistical test
+    record test-result {
+        /// Test statistic value
+        statistic: f64,
+        /// P-value
+        p-value: f64,
+        /// Degrees of freedom (if applicable)
+        degrees-of-freedom: option<f64>,
+    }
+
+    /// One-sample t-test (test if mean equals hypothesized value)
+    t-test-one-sample: func(arr: borrow<array>, hypothesized-mean: f64) -> result<test-result, arrow-error>;
+
+    /// Two-sample t-test (independent samples)
+    t-test-two-sample: func(arr1: borrow<array>, arr2: borrow<array>, equal-variance: bool) -> result<test-result, arrow-error>;
+
+    /// Paired t-test
+    t-test-paired: func(arr1: borrow<array>, arr2: borrow<array>) -> result<test-result, arrow-error>;
+
+    /// Chi-square goodness of fit test
+    chi-square-test: func(observed: borrow<array>, expected: borrow<array>) -> result<test-result, arrow-error>;
+
+    /// Mann-Whitney U test (non-parametric)
+    mann-whitney-test: func(arr1: borrow<array>, arr2: borrow<array>) -> result<test-result, arrow-error>;
+
+    /// ========== Outlier Detection (Phase 15.3) ==========
+
+    /// Outlier detection method
+    enum outlier-method {
+        /// Interquartile range method (1.5 * IQR)
+        iqr,
+        /// Z-score method (default threshold 3.0)
+        z-score,
+        /// Modified Z-score using MAD
+        modified-z-score,
+    }
+
+    /// Outlier detection options
+    record outlier-options {
+        /// Detection method
+        method: outlier-method,
+        /// Threshold for z-score methods (default 3.0)
+        threshold: option<f64>,
+    }
+
+    /// Detect outliers, returns boolean mask
+    detect-outliers: func(arr: borrow<array>, options: outlier-options) -> result<array, arrow-error>;
+
+    /// Count outliers
+    count-outliers: func(arr: borrow<array>, options: outlier-options) -> result<u64, arrow-error>;
+
+    /// Get outlier indices
+    outlier-indices: func(arr: borrow<array>, options: outlier-options) -> result<array, arrow-error>;
+
+    /// Remove outliers from array
+    remove-outliers: func(arr: borrow<array>, options: outlier-options) -> result<array, arrow-error>;
+
+    /// Cap outliers (winsorize) - replace with boundary values
+    cap-outliers: func(arr: borrow<array>, options: outlier-options) -> result<array, arrow-error>;
+
+    /// ========== Correlation & Covariance (Phase 15.4) ==========
+
+    /// Correlation method
+    enum correlation-method {
+        /// Pearson correlation coefficient
+        pearson,
+        /// Spearman rank correlation
+        spearman,
+    }
+
+    /// Compute correlation between two arrays with method selection
+    correlation-with-method: func(arr1: borrow<array>, arr2: borrow<array>, method: correlation-method) -> result<f64, arrow-error>;
+
+    /// Compute correlation matrix for multiple columns
+    correlation-matrix: func(
+        batch: borrow<record-batch>,
+        columns: list<string>,
+        method: correlation-method
+    ) -> result<record-batch, arrow-error>;
+
+    /// Cross-tabulation (contingency table)
+    cross-tabulate: func(
+        arr1: borrow<array>,
+        arr2: borrow<array>
+    ) -> result<record-batch, arrow-error>;
+
+    /// ========== Advanced Encoding (Phase 15.5) ==========
+
+    /// Delta encode an integer array (store differences)
+    delta-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Delta decode an integer array
+    delta-decode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Zigzag encode signed integers to unsigned (for better compression)
+    zigzag-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Zigzag decode unsigned back to signed
+    zigzag-decode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Time Series Analysis (Phase 15.6) ==========
+
+    /// Create lagged version of array (shift by n positions)
+    ts-lag: func(arr: borrow<array>, periods: u32) -> result<array, arrow-error>;
+
+    /// Create lead version of array (shift forward by n positions)
+    ts-lead: func(arr: borrow<array>, periods: u32) -> result<array, arrow-error>;
+
+    /// Compute autocorrelation at given lag
+    autocorrelation: func(arr: borrow<array>, lag: u32) -> result<f64, arrow-error>;
+
+    /// Compute autocorrelation for multiple lags
+    autocorrelation-series: func(arr: borrow<array>, max-lag: u32) -> result<array, arrow-error>;
+
+    /// Compute percent change between consecutive values
+    pct-change: func(arr: borrow<array>, periods: u32) -> result<array, arrow-error>;
+
+    /// Compute cumulative product
+    cumprod: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Feature Engineering (Phase 15.7) ==========
+
+    /// Normalize array to 0-1 range (min-max scaling)
+    normalize-min-max: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Standardize array to mean=0, std=1 (z-score normalization)
+    standardize: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Robust scaling using median and IQR
+    robust-scale: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Log transform (natural log, adds 1 to handle zeros)
+    log-transform: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Rank transform (convert to ranks, 1-based)
+    rank-transform: func(arr: borrow<array>) -> result<array, arrow-error>;
 }

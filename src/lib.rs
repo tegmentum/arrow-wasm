@@ -380,6 +380,365 @@ fn days_in_month(year: i32, month: u32) -> u32 {
     }
 }
 
+// ========== Phase 15 Helper Functions ==========
+
+/// Count distinct values in an array
+fn count_distinct_values(arr: &Arc<dyn arrow_array::Array>) -> Result<u64, compute::ArrowError> {
+    use std::collections::HashSet;
+
+    let mut seen: HashSet<String> = HashSet::new();
+
+    if let Some(str_arr) = arr.as_any().downcast_ref::<arrow_array::StringArray>() {
+        for i in 0..str_arr.len() {
+            if !str_arr.is_null(i) {
+                seen.insert(str_arr.value(i).to_string());
+            }
+        }
+    } else if let Some(int_arr) = arr.as_any().downcast_ref::<arrow_array::Int64Array>() {
+        for i in 0..int_arr.len() {
+            if !int_arr.is_null(i) {
+                seen.insert(int_arr.value(i).to_string());
+            }
+        }
+    } else if let Some(int_arr) = arr.as_any().downcast_ref::<arrow_array::Int32Array>() {
+        for i in 0..int_arr.len() {
+            if !int_arr.is_null(i) {
+                seen.insert(int_arr.value(i).to_string());
+            }
+        }
+    } else if let Some(f64_arr) = arr.as_any().downcast_ref::<arrow_array::Float64Array>() {
+        for i in 0..f64_arr.len() {
+            if !f64_arr.is_null(i) {
+                seen.insert(format!("{:.10}", f64_arr.value(i)));
+            }
+        }
+    } else if let Some(bool_arr) = arr.as_any().downcast_ref::<arrow_array::BooleanArray>() {
+        for i in 0..bool_arr.len() {
+            if !bool_arr.is_null(i) {
+                seen.insert(bool_arr.value(i).to_string());
+            }
+        }
+    }
+
+    Ok(seen.len() as u64)
+}
+
+/// Profile a column (implementation)
+fn profile_column_impl(arr: &Arc<dyn arrow_array::Array>, name: String) -> Result<compute::ColumnProfile, compute::ArrowError> {
+    let len = arr.len();
+    let null_count = arr.null_count();
+    let completeness = if len > 0 { 1.0 - (null_count as f64 / len as f64) } else { 0.0 };
+
+    let distinct_count = count_distinct_values(arr)?;
+
+    let (min_value, max_value, mean, stddev) = if let Ok(values) = collect_f64_values(&**arr) {
+        if values.is_empty() {
+            (None, None, None, None)
+        } else {
+            let min_v = values.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max_v = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let n = values.len() as f64;
+            let mean_v = values.iter().sum::<f64>() / n;
+            let variance = values.iter().map(|x| (x - mean_v).powi(2)).sum::<f64>() / n;
+            let stddev_v = variance.sqrt();
+            (Some(min_v.to_string()), Some(max_v.to_string()), Some(mean_v), Some(stddev_v))
+        }
+    } else {
+        (None, None, None, None)
+    };
+
+    Ok(compute::ColumnProfile {
+        name,
+        count: len as u64,
+        null_count: null_count as u64,
+        distinct_count,
+        completeness,
+        min_value,
+        max_value,
+        mean,
+        stddev,
+    })
+}
+
+/// Approximate t-distribution p-value using normal approximation for large df
+fn t_distribution_pvalue(t: f64, df: f64) -> f64 {
+    // For large df, t-distribution approaches normal
+    // Use approximation: t * sqrt(df / (df - 2)) ~ N(0,1) for df > 30
+    if df > 30.0 {
+        normal_cdf(-t.abs())
+    } else {
+        // Simple approximation for smaller df using beta function properties
+        // This is a rough approximation
+        let x = df / (df + t * t);
+        0.5 * incomplete_beta(df / 2.0, 0.5, x)
+    }
+}
+
+/// Standard normal CDF approximation
+fn normal_cdf(x: f64) -> f64 {
+    // Approximation using error function
+    0.5 * (1.0 + erf(x / std::f64::consts::SQRT_2))
+}
+
+/// Error function approximation
+fn erf(x: f64) -> f64 {
+    // Horner form approximation
+    let a1 =  0.254829592;
+    let a2 = -0.284496736;
+    let a3 =  1.421413741;
+    let a4 = -1.453152027;
+    let a5 =  1.061405429;
+    let p  =  0.3275911;
+
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let x = x.abs();
+
+    let t = 1.0 / (1.0 + p * x);
+    let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x * x).exp();
+
+    sign * y
+}
+
+/// Incomplete beta function approximation (for chi-square p-value)
+fn incomplete_beta(a: f64, b: f64, x: f64) -> f64 {
+    // Simple approximation using continued fraction
+    if x == 0.0 {
+        return 0.0;
+    }
+    if x == 1.0 {
+        return 1.0;
+    }
+
+    // Use series expansion for small x
+    let mut sum = 0.0;
+    let mut term = 1.0;
+    for n in 0..100 {
+        if n > 0 {
+            term *= (a + n as f64 - 1.0) * x / (a + b + n as f64 - 1.0) / n as f64;
+        }
+        sum += term;
+        if term.abs() < 1e-10 {
+            break;
+        }
+    }
+
+    x.powf(a) * (1.0 - x).powf(b) * sum / a
+}
+
+/// Chi-square p-value using gamma function approximation
+fn chi_square_pvalue(chi2: f64, df: f64) -> f64 {
+    // Upper incomplete gamma function ratio
+    // P(chi2, df) = gamma_inc(df/2, chi2/2) / gamma(df/2)
+    1.0 - gamma_inc_ratio(df / 2.0, chi2 / 2.0)
+}
+
+/// Regularized incomplete gamma function approximation
+fn gamma_inc_ratio(a: f64, x: f64) -> f64 {
+    if x < 0.0 {
+        return 0.0;
+    }
+    if x == 0.0 {
+        return 0.0;
+    }
+
+    // Series expansion for small x
+    if x < a + 1.0 {
+        let mut sum = 1.0 / a;
+        let mut term = 1.0 / a;
+        for n in 1..100 {
+            term *= x / (a + n as f64);
+            sum += term;
+            if term.abs() < 1e-10 {
+                break;
+            }
+        }
+        return sum * (-x + a * x.ln() - ln_gamma(a)).exp();
+    }
+
+    // Continued fraction for large x
+    1.0 - gamma_inc_upper_ratio(a, x)
+}
+
+/// Upper incomplete gamma function ratio (complement)
+fn gamma_inc_upper_ratio(a: f64, x: f64) -> f64 {
+    // Lentz's algorithm for continued fraction
+    let mut f = 1e-30_f64;
+    let mut c = 1e-30_f64;
+    let mut d = 0.0;
+
+    for n in 1..100 {
+        let an = if n == 1 { 1.0 } else { (n as f64 - 1.0 - a) * (n as f64 - 1.0) };
+        let bn = x + 2.0 * n as f64 - 1.0 - a;
+
+        d = bn + an * d;
+        if d.abs() < 1e-30 { d = 1e-30; }
+        d = 1.0 / d;
+
+        c = bn + an / c;
+        if c.abs() < 1e-30 { c = 1e-30; }
+
+        let delta = c * d;
+        f *= delta;
+
+        if (delta - 1.0).abs() < 1e-10 {
+            break;
+        }
+    }
+
+    f * (-x + a * x.ln() - ln_gamma(a)).exp()
+}
+
+/// Log gamma function approximation (Stirling)
+fn ln_gamma(x: f64) -> f64 {
+    // Stirling's approximation
+    let x = x - 1.0;
+    0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * x.ln() - x
+        + 1.0 / (12.0 * x) - 1.0 / (360.0 * x.powi(3))
+}
+
+/// Compute outlier bounds based on method
+fn compute_outlier_bounds(values: &[Option<f64>], options: &compute::OutlierOptions) -> Result<(f64, f64), compute::ArrowError> {
+    let non_null: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+
+    if non_null.is_empty() {
+        return Ok((f64::NEG_INFINITY, f64::INFINITY));
+    }
+
+    let threshold = options.threshold.unwrap_or(3.0);
+
+    match options.method {
+        compute::OutlierMethod::Iqr => {
+            let mut sorted = non_null.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let n = sorted.len();
+            let q1 = sorted[n / 4];
+            let q3 = sorted[3 * n / 4];
+            let iqr = q3 - q1;
+            Ok((q1 - 1.5 * iqr, q3 + 1.5 * iqr))
+        }
+        compute::OutlierMethod::ZScore => {
+            let n = non_null.len() as f64;
+            let mean = non_null.iter().sum::<f64>() / n;
+            let std = (non_null.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n).sqrt();
+            if std == 0.0 {
+                Ok((mean, mean))
+            } else {
+                Ok((mean - threshold * std, mean + threshold * std))
+            }
+        }
+        compute::OutlierMethod::ModifiedZScore => {
+            // Use MAD (Median Absolute Deviation) for robustness
+            let mut sorted = non_null.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let n = sorted.len();
+            let median = if n % 2 == 0 {
+                (sorted[n/2 - 1] + sorted[n/2]) / 2.0
+            } else {
+                sorted[n/2]
+            };
+
+            let mut deviations: Vec<f64> = sorted.iter().map(|x| (x - median).abs()).collect();
+            deviations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let mad = if n % 2 == 0 {
+                (deviations[n/2 - 1] + deviations[n/2]) / 2.0
+            } else {
+                deviations[n/2]
+            };
+
+            // Modified z-score uses 0.6745 constant for consistency with normal distribution
+            let modified_std = mad / 0.6745;
+            if modified_std == 0.0 {
+                Ok((median, median))
+            } else {
+                Ok((median - threshold * modified_std, median + threshold * modified_std))
+            }
+        }
+    }
+}
+
+/// Pearson correlation coefficient
+fn compute_pearson_correlation(x: &[f64], y: &[f64]) -> Result<f64, compute::ArrowError> {
+    let n = x.len() as f64;
+    let mean_x = x.iter().sum::<f64>() / n;
+    let mean_y = y.iter().sum::<f64>() / n;
+
+    let mut cov = 0.0;
+    let mut var_x = 0.0;
+    let mut var_y = 0.0;
+
+    for (xi, yi) in x.iter().zip(y.iter()) {
+        let dx = xi - mean_x;
+        let dy = yi - mean_y;
+        cov += dx * dy;
+        var_x += dx * dx;
+        var_y += dy * dy;
+    }
+
+    if var_x == 0.0 || var_y == 0.0 {
+        return Ok(0.0);
+    }
+
+    Ok(cov / (var_x * var_y).sqrt())
+}
+
+/// Spearman rank correlation
+fn compute_spearman_correlation(x: &[f64], y: &[f64]) -> Result<f64, compute::ArrowError> {
+    // Convert to ranks
+    let rank_x = compute_ranks(x);
+    let rank_y = compute_ranks(y);
+
+    // Compute Pearson correlation on ranks
+    compute_pearson_correlation(&rank_x, &rank_y)
+}
+
+/// Compute ranks for a vector
+fn compute_ranks(values: &[f64]) -> Vec<f64> {
+    let mut indexed: Vec<(f64, usize)> = values.iter().cloned().enumerate().map(|(i, v)| (v, i)).collect();
+    indexed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut ranks = vec![0.0; values.len()];
+    let mut i = 0;
+    while i < indexed.len() {
+        let mut j = i;
+        while j < indexed.len() && (indexed[j].0 - indexed[i].0).abs() < f64::EPSILON {
+            j += 1;
+        }
+        // Average rank for ties
+        let avg_rank = (i + j + 1) as f64 / 2.0;
+        for k in i..j {
+            ranks[indexed[k].1] = avg_rank;
+        }
+        i = j;
+    }
+
+    ranks
+}
+
+/// Extract string value at index from any array type
+fn extract_string_at_index(arr: &Arc<dyn arrow_array::Array>, idx: usize) -> Option<String> {
+    if arr.is_null(idx) {
+        return None;
+    }
+
+    if let Some(str_arr) = arr.as_any().downcast_ref::<arrow_array::StringArray>() {
+        return Some(str_arr.value(idx).to_string());
+    }
+    if let Some(int_arr) = arr.as_any().downcast_ref::<arrow_array::Int64Array>() {
+        return Some(int_arr.value(idx).to_string());
+    }
+    if let Some(int_arr) = arr.as_any().downcast_ref::<arrow_array::Int32Array>() {
+        return Some(int_arr.value(idx).to_string());
+    }
+    if let Some(f64_arr) = arr.as_any().downcast_ref::<arrow_array::Float64Array>() {
+        return Some(f64_arr.value(idx).to_string());
+    }
+    if let Some(bool_arr) = arr.as_any().downcast_ref::<arrow_array::BooleanArray>() {
+        return Some(bool_arr.value(idx).to_string());
+    }
+
+    None
+}
+
 // Helper functions for window operations
 
 /// Compute partition boundaries and sort indices for window functions
@@ -18244,6 +18603,1021 @@ impl compute::Guest for Component {
         // Convert Vec<u32> to UInt32Array
         let result = arrow_array::UInt32Array::from(ranks);
         Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========== Phase 15.1: Data Quality & Validation ==========
+
+    fn profile_column(arr: arrays::ArrayBorrow<'_>, name: String) -> Result<compute::ColumnProfile, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let inner = &arr_impl.inner;
+        let len = inner.len();
+        let null_count = inner.null_count();
+        let completeness = if len > 0 { 1.0 - (null_count as f64 / len as f64) } else { 0.0 };
+
+        // Count distinct values using HashSet
+        let distinct_count = count_distinct_values(&inner)?;
+
+        // Get min/max/mean/stddev for numeric types
+        let (min_value, max_value, mean, stddev) = if let Ok(values) = collect_f64_values(&inner) {
+            if values.is_empty() {
+                (None, None, None, None)
+            } else {
+                let min_v = values.iter().cloned().fold(f64::INFINITY, f64::min);
+                let max_v = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let n = values.len() as f64;
+                let mean_v = values.iter().sum::<f64>() / n;
+                let variance = values.iter().map(|x| (x - mean_v).powi(2)).sum::<f64>() / n;
+                let stddev_v = variance.sqrt();
+                (Some(min_v.to_string()), Some(max_v.to_string()), Some(mean_v), Some(stddev_v))
+            }
+        } else {
+            (None, None, None, None)
+        };
+
+        Ok(compute::ColumnProfile {
+            name,
+            count: len as u64,
+            null_count: null_count as u64,
+            distinct_count,
+            completeness,
+            min_value,
+            max_value,
+            mean,
+            stddev,
+        })
+    }
+
+    fn profile_batch(batch: record_batch::RecordBatchBorrow<'_>) -> Result<Vec<compute::ColumnProfile>, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let schema = batch_impl.inner.schema();
+        let mut profiles = Vec::new();
+
+        for (i, field) in schema.fields().iter().enumerate() {
+            let col = batch_impl.inner.column(i);
+            let arr = ArrayImpl { inner: col.clone() };
+
+            let profile = profile_column_impl(&arr.inner, field.name().clone())?;
+            profiles.push(profile);
+        }
+
+        Ok(profiles)
+    }
+
+    fn pattern_match_ratio(arr: arrays::ArrayBorrow<'_>, pattern: String) -> Result<f64, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let regex = regex::Regex::new(&pattern)
+            .map_err(|e| compute::ArrowError::InvalidArgument(format!("Invalid regex: {}", e)))?;
+
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let mut matches = 0u64;
+        let mut total = 0u64;
+
+        for i in 0..str_arr.len() {
+            if !str_arr.is_null(i) {
+                total += 1;
+                if regex.is_match(str_arr.value(i)) {
+                    matches += 1;
+                }
+            }
+        }
+
+        if total == 0 {
+            Ok(0.0)
+        } else {
+            Ok(matches as f64 / total as f64)
+        }
+    }
+
+    fn duplicate_count(batch: record_batch::RecordBatchBorrow<'_>, columns: Vec<String>) -> Result<u64, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let inner = &batch_impl.inner;
+
+        if columns.is_empty() {
+            return Ok(0);
+        }
+
+        // Use row converter to create hashable rows
+        use arrow_row::{RowConverter, SortField};
+        use std::collections::HashSet;
+
+        let col_indices: Vec<usize> = columns.iter()
+            .filter_map(|name| inner.schema().index_of(name).ok())
+            .collect();
+
+        if col_indices.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("No matching columns found".to_string()));
+        }
+
+        let sort_fields: Vec<SortField> = col_indices.iter()
+            .map(|&i| SortField::new(inner.column(i).data_type().clone()))
+            .collect();
+
+        let converter = RowConverter::new(sort_fields)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        let arrays: Vec<Arc<dyn arrow_array::Array>> = col_indices.iter()
+            .map(|&i| inner.column(i).clone())
+            .collect();
+
+        let rows = converter.convert_columns(&arrays)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        let mut seen: HashSet<Vec<u8>> = HashSet::new();
+        let mut duplicates = 0u64;
+
+        for i in 0..rows.num_rows() {
+            let row = rows.row(i);
+            let row_bytes = row.as_ref().to_vec();
+            if !seen.insert(row_bytes) {
+                duplicates += 1;
+            }
+        }
+
+        Ok(duplicates)
+    }
+
+    fn duplicate_indices(batch: record_batch::RecordBatchBorrow<'_>, columns: Vec<String>) -> Result<arrays::Array, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let inner = &batch_impl.inner;
+
+        if columns.is_empty() {
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(arrow_array::UInt64Array::from(Vec::<u64>::new())) }));
+        }
+
+        use arrow_row::{RowConverter, SortField};
+        use std::collections::HashSet;
+
+        let col_indices: Vec<usize> = columns.iter()
+            .filter_map(|name| inner.schema().index_of(name).ok())
+            .collect();
+
+        if col_indices.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("No matching columns found".to_string()));
+        }
+
+        let sort_fields: Vec<SortField> = col_indices.iter()
+            .map(|&i| SortField::new(inner.column(i).data_type().clone()))
+            .collect();
+
+        let converter = RowConverter::new(sort_fields)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        let arrays: Vec<Arc<dyn arrow_array::Array>> = col_indices.iter()
+            .map(|&i| inner.column(i).clone())
+            .collect();
+
+        let rows = converter.convert_columns(&arrays)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        let mut seen: HashSet<Vec<u8>> = HashSet::new();
+        let mut dup_indices = Vec::new();
+
+        for i in 0..rows.num_rows() {
+            let row = rows.row(i);
+            let row_bytes = row.as_ref().to_vec();
+            if !seen.insert(row_bytes) {
+                dup_indices.push(i as u64);
+            }
+        }
+
+        let result_arr = arrow_array::UInt64Array::from(dup_indices);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========== Phase 15.2: Statistical Hypothesis Testing ==========
+
+    fn t_test_one_sample(arr: arrays::ArrayBorrow<'_>, hypothesized_mean: f64) -> Result<compute::TestResult, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_f64_values(&arr_impl.inner)?;
+
+        if values.len() < 2 {
+            return Err(compute::ArrowError::InvalidArgument("Need at least 2 values for t-test".to_string()));
+        }
+
+        let n = values.len() as f64;
+        let mean = values.iter().sum::<f64>() / n;
+        let variance = values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0);
+        let std_err = (variance / n).sqrt();
+
+        if std_err == 0.0 {
+            return Err(compute::ArrowError::ComputeError("Zero standard error".to_string()));
+        }
+
+        let t_stat = (mean - hypothesized_mean) / std_err;
+        let df = n - 1.0;
+
+        // Approximate p-value using t-distribution approximation
+        let p_value = t_distribution_pvalue(t_stat.abs(), df);
+
+        Ok(compute::TestResult {
+            statistic: t_stat,
+            p_value: 2.0 * p_value, // two-tailed
+            degrees_of_freedom: Some(df),
+        })
+    }
+
+    fn t_test_two_sample(arr1: arrays::ArrayBorrow<'_>, arr2: arrays::ArrayBorrow<'_>, equal_variance: bool) -> Result<compute::TestResult, compute::ArrowError> {
+        let arr1_impl = arr1.get::<ArrayImpl>();
+        let arr2_impl = arr2.get::<ArrayImpl>();
+        let values1 = collect_f64_values(&arr1_impl.inner)?;
+        let values2 = collect_f64_values(&arr2_impl.inner)?;
+
+        if values1.len() < 2 || values2.len() < 2 {
+            return Err(compute::ArrowError::InvalidArgument("Need at least 2 values in each sample".to_string()));
+        }
+
+        let n1 = values1.len() as f64;
+        let n2 = values2.len() as f64;
+        let mean1 = values1.iter().sum::<f64>() / n1;
+        let mean2 = values2.iter().sum::<f64>() / n2;
+        let var1 = values1.iter().map(|x| (x - mean1).powi(2)).sum::<f64>() / (n1 - 1.0);
+        let var2 = values2.iter().map(|x| (x - mean2).powi(2)).sum::<f64>() / (n2 - 1.0);
+
+        let (t_stat, df) = if equal_variance {
+            // Pooled variance
+            let sp2 = ((n1 - 1.0) * var1 + (n2 - 1.0) * var2) / (n1 + n2 - 2.0);
+            let std_err = (sp2 * (1.0/n1 + 1.0/n2)).sqrt();
+            let t = (mean1 - mean2) / std_err;
+            (t, n1 + n2 - 2.0)
+        } else {
+            // Welch's t-test
+            let std_err = (var1/n1 + var2/n2).sqrt();
+            let t = (mean1 - mean2) / std_err;
+            // Welch-Satterthwaite degrees of freedom
+            let num = (var1/n1 + var2/n2).powi(2);
+            let denom = (var1/n1).powi(2)/(n1-1.0) + (var2/n2).powi(2)/(n2-1.0);
+            (t, num/denom)
+        };
+
+        let p_value = t_distribution_pvalue(t_stat.abs(), df);
+
+        Ok(compute::TestResult {
+            statistic: t_stat,
+            p_value: 2.0 * p_value,
+            degrees_of_freedom: Some(df),
+        })
+    }
+
+    fn t_test_paired(arr1: arrays::ArrayBorrow<'_>, arr2: arrays::ArrayBorrow<'_>) -> Result<compute::TestResult, compute::ArrowError> {
+        let arr1_impl = arr1.get::<ArrayImpl>();
+        let arr2_impl = arr2.get::<ArrayImpl>();
+        let values1 = collect_f64_values(&arr1_impl.inner)?;
+        let values2 = collect_f64_values(&arr2_impl.inner)?;
+
+        if values1.len() != values2.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length for paired t-test".to_string()));
+        }
+
+        if values1.len() < 2 {
+            return Err(compute::ArrowError::InvalidArgument("Need at least 2 values for t-test".to_string()));
+        }
+
+        // Compute differences
+        let diffs: Vec<f64> = values1.iter().zip(values2.iter()).map(|(a, b)| a - b).collect();
+        let n = diffs.len() as f64;
+        let mean_diff = diffs.iter().sum::<f64>() / n;
+        let var_diff = diffs.iter().map(|d| (d - mean_diff).powi(2)).sum::<f64>() / (n - 1.0);
+        let std_err = (var_diff / n).sqrt();
+
+        if std_err == 0.0 {
+            return Err(compute::ArrowError::ComputeError("Zero standard error".to_string()));
+        }
+
+        let t_stat = mean_diff / std_err;
+        let df = n - 1.0;
+        let p_value = t_distribution_pvalue(t_stat.abs(), df);
+
+        Ok(compute::TestResult {
+            statistic: t_stat,
+            p_value: 2.0 * p_value,
+            degrees_of_freedom: Some(df),
+        })
+    }
+
+    fn chi_square_test(observed: arrays::ArrayBorrow<'_>, expected: arrays::ArrayBorrow<'_>) -> Result<compute::TestResult, compute::ArrowError> {
+        let obs_impl = observed.get::<ArrayImpl>();
+        let exp_impl = expected.get::<ArrayImpl>();
+        let obs_values = collect_f64_values(&obs_impl.inner)?;
+        let exp_values = collect_f64_values(&exp_impl.inner)?;
+
+        if obs_values.len() != exp_values.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        if obs_values.len() < 2 {
+            return Err(compute::ArrowError::InvalidArgument("Need at least 2 values".to_string()));
+        }
+
+        // Chi-square statistic: sum((O - E)^2 / E)
+        let mut chi2 = 0.0;
+        for (o, e) in obs_values.iter().zip(exp_values.iter()) {
+            if *e <= 0.0 {
+                return Err(compute::ArrowError::InvalidArgument("Expected values must be positive".to_string()));
+            }
+            chi2 += (o - e).powi(2) / e;
+        }
+
+        let df = (obs_values.len() - 1) as f64;
+        let p_value = chi_square_pvalue(chi2, df);
+
+        Ok(compute::TestResult {
+            statistic: chi2,
+            p_value,
+            degrees_of_freedom: Some(df),
+        })
+    }
+
+    fn mann_whitney_test(arr1: arrays::ArrayBorrow<'_>, arr2: arrays::ArrayBorrow<'_>) -> Result<compute::TestResult, compute::ArrowError> {
+        let arr1_impl = arr1.get::<ArrayImpl>();
+        let arr2_impl = arr2.get::<ArrayImpl>();
+        let values1 = collect_f64_values(&arr1_impl.inner)?;
+        let values2 = collect_f64_values(&arr2_impl.inner)?;
+
+        let n1 = values1.len();
+        let n2 = values2.len();
+
+        if n1 < 1 || n2 < 1 {
+            return Err(compute::ArrowError::InvalidArgument("Need at least 1 value in each sample".to_string()));
+        }
+
+        // Combine and rank
+        let mut combined: Vec<(f64, usize)> = Vec::with_capacity(n1 + n2);
+        for v in &values1 {
+            combined.push((*v, 0)); // 0 = group 1
+        }
+        for v in &values2 {
+            combined.push((*v, 1)); // 1 = group 2
+        }
+
+        combined.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Assign ranks (handling ties with average rank)
+        let mut ranks = vec![0.0; combined.len()];
+        let mut i = 0;
+        while i < combined.len() {
+            let mut j = i;
+            while j < combined.len() && (combined[j].0 - combined[i].0).abs() < f64::EPSILON {
+                j += 1;
+            }
+            let avg_rank = (i + j + 1) as f64 / 2.0 + (i as f64);
+            for k in i..j {
+                ranks[k] = avg_rank - i as f64 + 1.0;
+            }
+            i = j;
+        }
+
+        // Sum ranks for group 1
+        let mut r1 = 0.0;
+        for (idx, (_, group)) in combined.iter().enumerate() {
+            if *group == 0 {
+                r1 += ranks[idx];
+            }
+        }
+
+        // Mann-Whitney U statistic
+        let u1 = r1 - (n1 * (n1 + 1)) as f64 / 2.0;
+        let u2 = (n1 * n2) as f64 - u1;
+        let u = u1.min(u2);
+
+        // Normal approximation for large samples
+        let mean_u = (n1 * n2) as f64 / 2.0;
+        let std_u = ((n1 * n2 * (n1 + n2 + 1)) as f64 / 12.0).sqrt();
+
+        let z = (u - mean_u) / std_u;
+        let p_value = 2.0 * normal_cdf(-z.abs());
+
+        Ok(compute::TestResult {
+            statistic: u,
+            p_value,
+            degrees_of_freedom: None,
+        })
+    }
+
+    // ========== Phase 15.3: Outlier Detection ==========
+
+    fn detect_outliers(arr: arrays::ArrayBorrow<'_>, options: compute::OutlierOptions) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let (lower, upper) = compute_outlier_bounds(&values, &options)?;
+
+        let mut result: Vec<Option<bool>> = Vec::with_capacity(values.len());
+        for v in &values {
+            match v {
+                Some(x) => result.push(Some(*x < lower || *x > upper)),
+                None => result.push(None),
+            }
+        }
+
+        let result_arr: arrow_array::BooleanArray = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn count_outliers(arr: arrays::ArrayBorrow<'_>, options: compute::OutlierOptions) -> Result<u64, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let (lower, upper) = compute_outlier_bounds(&values, &options)?;
+
+        let count = values.iter()
+            .filter_map(|v| *v)
+            .filter(|x| *x < lower || *x > upper)
+            .count();
+
+        Ok(count as u64)
+    }
+
+    fn outlier_indices(arr: arrays::ArrayBorrow<'_>, options: compute::OutlierOptions) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let (lower, upper) = compute_outlier_bounds(&values, &options)?;
+
+        let indices: Vec<u64> = values.iter()
+            .enumerate()
+            .filter_map(|(i, v)| {
+                v.and_then(|x| if x < lower || x > upper { Some(i as u64) } else { None })
+            })
+            .collect();
+
+        let result_arr = arrow_array::UInt64Array::from(indices);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn remove_outliers(arr: arrays::ArrayBorrow<'_>, options: compute::OutlierOptions) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let (lower, upper) = compute_outlier_bounds(&values, &options)?;
+
+        let filtered: Vec<Option<f64>> = values.iter()
+            .filter(|v| match v {
+                Some(x) => *x >= lower && *x <= upper,
+                None => true, // keep nulls
+            })
+            .cloned()
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = filtered.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn cap_outliers(arr: arrays::ArrayBorrow<'_>, options: compute::OutlierOptions) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let (lower, upper) = compute_outlier_bounds(&values, &options)?;
+
+        let capped: Vec<Option<f64>> = values.iter()
+            .map(|v| v.map(|x| x.clamp(lower, upper)))
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = capped.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========== Phase 15.4: Correlation & Covariance ==========
+
+    fn correlation_with_method(arr1: arrays::ArrayBorrow<'_>, arr2: arrays::ArrayBorrow<'_>, method: compute::CorrelationMethod) -> Result<f64, compute::ArrowError> {
+        let arr1_impl = arr1.get::<ArrayImpl>();
+        let arr2_impl = arr2.get::<ArrayImpl>();
+        let values1 = collect_f64_values(&arr1_impl.inner)?;
+        let values2 = collect_f64_values(&arr2_impl.inner)?;
+
+        if values1.len() != values2.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        if values1.len() < 2 {
+            return Err(compute::ArrowError::InvalidArgument("Need at least 2 values".to_string()));
+        }
+
+        match method {
+            compute::CorrelationMethod::Pearson => compute_pearson_correlation(&values1, &values2),
+            compute::CorrelationMethod::Spearman => compute_spearman_correlation(&values1, &values2),
+        }
+    }
+
+    fn correlation_matrix(batch: record_batch::RecordBatchBorrow<'_>, columns: Vec<String>, method: compute::CorrelationMethod) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let inner = &batch_impl.inner;
+
+        if columns.len() < 2 {
+            return Err(compute::ArrowError::InvalidArgument("Need at least 2 columns".to_string()));
+        }
+
+        // Extract numeric values for each column
+        let mut col_values: Vec<Vec<f64>> = Vec::new();
+        for name in &columns {
+            let idx = inner.schema().index_of(name)
+                .map_err(|_| compute::ArrowError::InvalidArgument(format!("Column '{}' not found", name)))?;
+            let values = collect_f64_values(&inner.column(idx))?;
+            col_values.push(values);
+        }
+
+        // Build correlation matrix as flat arrays
+        let n = columns.len();
+        let mut col1_names: Vec<String> = Vec::new();
+        let mut col2_names: Vec<String> = Vec::new();
+        let mut correlations: Vec<f64> = Vec::new();
+
+        for i in 0..n {
+            for j in i..n {
+                col1_names.push(columns[i].clone());
+                col2_names.push(columns[j].clone());
+                let corr = if i == j {
+                    1.0
+                } else {
+                    match method {
+                        compute::CorrelationMethod::Pearson => compute_pearson_correlation(&col_values[i], &col_values[j])?,
+                        compute::CorrelationMethod::Spearman => compute_spearman_correlation(&col_values[i], &col_values[j])?,
+                    }
+                };
+                correlations.push(corr);
+            }
+        }
+
+        let col1_arr: arrow_array::StringArray = col1_names.into_iter().map(Some).collect();
+        let col2_arr: arrow_array::StringArray = col2_names.into_iter().map(Some).collect();
+        let corr_arr = arrow_array::Float64Array::from(correlations);
+
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("column1", arrow_schema::DataType::Utf8, false),
+            arrow_schema::Field::new("column2", arrow_schema::DataType::Utf8, false),
+            arrow_schema::Field::new("correlation", arrow_schema::DataType::Float64, false),
+        ]));
+
+        let result = ArrowRecordBatch::try_new(schema, vec![
+            Arc::new(col1_arr),
+            Arc::new(col2_arr),
+            Arc::new(corr_arr),
+        ]).map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn cross_tabulate(arr1: arrays::ArrayBorrow<'_>, arr2: arrays::ArrayBorrow<'_>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let arr1_impl = arr1.get::<ArrayImpl>();
+        let arr2_impl = arr2.get::<ArrayImpl>();
+
+        // Count combinations
+        let mut counts: HashMap<(String, String), u64> = HashMap::new();
+
+        let len = arr1_impl.inner.len();
+        if arr2_impl.inner.len() != len {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        for i in 0..len {
+            let v1 = extract_string_at_index(&arr1_impl.inner, i);
+            let v2 = extract_string_at_index(&arr2_impl.inner, i);
+            if let (Some(s1), Some(s2)) = (v1, v2) {
+                *counts.entry((s1, s2)).or_insert(0) += 1;
+            }
+        }
+
+        let mut val1s: Vec<String> = Vec::new();
+        let mut val2s: Vec<String> = Vec::new();
+        let mut cnts: Vec<u64> = Vec::new();
+
+        for ((v1, v2), cnt) in counts {
+            val1s.push(v1);
+            val2s.push(v2);
+            cnts.push(cnt);
+        }
+
+        let col1_arr: arrow_array::StringArray = val1s.into_iter().map(Some).collect();
+        let col2_arr: arrow_array::StringArray = val2s.into_iter().map(Some).collect();
+        let cnt_arr = arrow_array::UInt64Array::from(cnts);
+
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("value1", arrow_schema::DataType::Utf8, false),
+            arrow_schema::Field::new("value2", arrow_schema::DataType::Utf8, false),
+            arrow_schema::Field::new("count", arrow_schema::DataType::UInt64, false),
+        ]));
+
+        let result = ArrowRecordBatch::try_new(schema, vec![
+            Arc::new(col1_arr),
+            Arc::new(col2_arr),
+            Arc::new(cnt_arr),
+        ]).map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    // ========== Phase 15.5: Advanced Encoding ==========
+
+    fn delta_encode(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let mut result: Vec<Option<i64>> = Vec::with_capacity(int_arr.len());
+            let mut prev: Option<i64> = None;
+
+            for i in 0..int_arr.len() {
+                if int_arr.is_null(i) {
+                    result.push(None);
+                } else {
+                    let val = int_arr.value(i);
+                    match prev {
+                        Some(p) => result.push(Some(val - p)),
+                        None => result.push(Some(val)), // First value stored as-is
+                    }
+                    prev = Some(val);
+                }
+            }
+
+            let result_arr: arrow_array::Int64Array = result.into_iter().collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+        } else if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            let mut result: Vec<Option<i32>> = Vec::with_capacity(int_arr.len());
+            let mut prev: Option<i32> = None;
+
+            for i in 0..int_arr.len() {
+                if int_arr.is_null(i) {
+                    result.push(None);
+                } else {
+                    let val = int_arr.value(i);
+                    match prev {
+                        Some(p) => result.push(Some(val - p)),
+                        None => result.push(Some(val)),
+                    }
+                    prev = Some(val);
+                }
+            }
+
+            let result_arr: arrow_array::Int32Array = result.into_iter().collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Delta encoding requires integer array".to_string()))
+        }
+    }
+
+    fn delta_decode(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let mut result: Vec<Option<i64>> = Vec::with_capacity(int_arr.len());
+            let mut running: i64 = 0;
+
+            for i in 0..int_arr.len() {
+                if int_arr.is_null(i) {
+                    result.push(None);
+                } else {
+                    running += int_arr.value(i);
+                    result.push(Some(running));
+                }
+            }
+
+            let result_arr: arrow_array::Int64Array = result.into_iter().collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+        } else if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            let mut result: Vec<Option<i32>> = Vec::with_capacity(int_arr.len());
+            let mut running: i32 = 0;
+
+            for i in 0..int_arr.len() {
+                if int_arr.is_null(i) {
+                    result.push(None);
+                } else {
+                    running += int_arr.value(i);
+                    result.push(Some(running));
+                }
+            }
+
+            let result_arr: arrow_array::Int32Array = result.into_iter().collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Delta decoding requires integer array".to_string()))
+        }
+    }
+
+    fn zigzag_encode(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let result: Vec<Option<u64>> = (0..int_arr.len())
+                .map(|i| {
+                    if int_arr.is_null(i) {
+                        None
+                    } else {
+                        let n = int_arr.value(i);
+                        Some(((n << 1) ^ (n >> 63)) as u64)
+                    }
+                })
+                .collect();
+
+            let result_arr: arrow_array::UInt64Array = result.into_iter().collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+        } else if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            let result: Vec<Option<u32>> = (0..int_arr.len())
+                .map(|i| {
+                    if int_arr.is_null(i) {
+                        None
+                    } else {
+                        let n = int_arr.value(i);
+                        Some(((n << 1) ^ (n >> 31)) as u32)
+                    }
+                })
+                .collect();
+
+            let result_arr: arrow_array::UInt32Array = result.into_iter().collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Zigzag encoding requires signed integer array".to_string()))
+        }
+    }
+
+    fn zigzag_decode(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+
+        if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::UInt64Array>() {
+            let result: Vec<Option<i64>> = (0..int_arr.len())
+                .map(|i| {
+                    if int_arr.is_null(i) {
+                        None
+                    } else {
+                        let n = int_arr.value(i);
+                        Some(((n >> 1) as i64) ^ -((n & 1) as i64))
+                    }
+                })
+                .collect();
+
+            let result_arr: arrow_array::Int64Array = result.into_iter().collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+        } else if let Some(int_arr) = arr_impl.inner.as_any().downcast_ref::<arrow_array::UInt32Array>() {
+            let result: Vec<Option<i32>> = (0..int_arr.len())
+                .map(|i| {
+                    if int_arr.is_null(i) {
+                        None
+                    } else {
+                        let n = int_arr.value(i);
+                        Some(((n >> 1) as i32) ^ -((n & 1) as i32))
+                    }
+                })
+                .collect();
+
+            let result_arr: arrow_array::Int32Array = result.into_iter().collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+        } else {
+            Err(compute::ArrowError::InvalidArgument("Zigzag decoding requires unsigned integer array".to_string()))
+        }
+    }
+
+    // ========== Phase 15.6: Time Series Analysis ==========
+
+    fn ts_lag(arr: arrays::ArrayBorrow<'_>, periods: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let mut result: Vec<Option<f64>> = Vec::with_capacity(values.len());
+
+        for i in 0..values.len() {
+            if i < periods as usize {
+                result.push(None);
+            } else {
+                result.push(values[i - periods as usize]);
+            }
+        }
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn ts_lead(arr: arrays::ArrayBorrow<'_>, periods: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let mut result: Vec<Option<f64>> = Vec::with_capacity(values.len());
+
+        for i in 0..values.len() {
+            if i + (periods as usize) >= values.len() {
+                result.push(None);
+            } else {
+                result.push(values[i + periods as usize]);
+            }
+        }
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn autocorrelation(arr: arrays::ArrayBorrow<'_>, lag: u32) -> Result<f64, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_f64_values(&arr_impl.inner)?;
+
+        if values.len() <= lag as usize {
+            return Err(compute::ArrowError::InvalidArgument("Array too short for given lag".to_string()));
+        }
+
+        let n = values.len();
+        let mean = values.iter().sum::<f64>() / n as f64;
+
+        let mut numerator = 0.0;
+        let mut denominator = 0.0;
+
+        for i in 0..n {
+            let diff = values[i] - mean;
+            denominator += diff * diff;
+            if i >= lag as usize {
+                numerator += (values[i] - mean) * (values[i - lag as usize] - mean);
+            }
+        }
+
+        if denominator == 0.0 {
+            return Ok(0.0);
+        }
+
+        Ok(numerator / denominator)
+    }
+
+    fn autocorrelation_series(arr: arrays::ArrayBorrow<'_>, max_lag: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_f64_values(&arr_impl.inner)?;
+
+        let n = values.len();
+        let mean = values.iter().sum::<f64>() / n as f64;
+
+        let mut denominator = 0.0;
+        for v in &values {
+            let diff = v - mean;
+            denominator += diff * diff;
+        }
+
+        let mut result: Vec<f64> = Vec::with_capacity(max_lag as usize + 1);
+
+        for lag in 0..=max_lag {
+            if n <= lag as usize || denominator == 0.0 {
+                result.push(0.0);
+            } else {
+                let mut numerator = 0.0;
+                for i in (lag as usize)..n {
+                    numerator += (values[i] - mean) * (values[i - lag as usize] - mean);
+                }
+                result.push(numerator / denominator);
+            }
+        }
+
+        let result_arr = arrow_array::Float64Array::from(result);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn pct_change(arr: arrays::ArrayBorrow<'_>, periods: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let mut result: Vec<Option<f64>> = Vec::with_capacity(values.len());
+
+        for i in 0..values.len() {
+            if i < periods as usize {
+                result.push(None);
+            } else {
+                match (values[i], values[i - periods as usize]) {
+                    (Some(curr), Some(prev)) if prev != 0.0 => {
+                        result.push(Some((curr - prev) / prev));
+                    }
+                    _ => result.push(None),
+                }
+            }
+        }
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn cumprod(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let mut result: Vec<Option<f64>> = Vec::with_capacity(values.len());
+        let mut running = 1.0;
+
+        for v in values {
+            match v {
+                Some(x) => {
+                    running *= x;
+                    result.push(Some(running));
+                }
+                None => result.push(None),
+            }
+        }
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========== Phase 15.7: Feature Engineering ==========
+
+    fn normalize_min_max(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let non_null: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+        if non_null.is_empty() {
+            return Ok(arrays::Array::new(ArrayImpl { inner: arr_impl.inner.clone() }));
+        }
+
+        let min_v = non_null.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_v = non_null.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let range = max_v - min_v;
+
+        let result: Vec<Option<f64>> = values.iter()
+            .map(|v| v.map(|x| if range == 0.0 { 0.5 } else { (x - min_v) / range }))
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn standardize(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let non_null: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+        if non_null.is_empty() {
+            return Ok(arrays::Array::new(ArrayImpl { inner: arr_impl.inner.clone() }));
+        }
+
+        let n = non_null.len() as f64;
+        let mean = non_null.iter().sum::<f64>() / n;
+        let variance = non_null.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
+        let std = variance.sqrt();
+
+        let result: Vec<Option<f64>> = values.iter()
+            .map(|v| v.map(|x| if std == 0.0 { 0.0 } else { (x - mean) / std }))
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn robust_scale(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let mut non_null: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+        if non_null.is_empty() {
+            return Ok(arrays::Array::new(ArrayImpl { inner: arr_impl.inner.clone() }));
+        }
+
+        non_null.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = non_null.len();
+        let median = if n % 2 == 0 {
+            (non_null[n/2 - 1] + non_null[n/2]) / 2.0
+        } else {
+            non_null[n/2]
+        };
+
+        let q1 = non_null[n / 4];
+        let q3 = non_null[3 * n / 4];
+        let iqr = q3 - q1;
+
+        let result: Vec<Option<f64>> = values.iter()
+            .map(|v| v.map(|x| if iqr == 0.0 { 0.0 } else { (x - median) / iqr }))
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn log_transform(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let result: Vec<Option<f64>> = values.iter()
+            .map(|v| v.map(|x| (x + 1.0).ln()))
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn rank_transform(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        // Create (value, index) pairs and sort
+        let mut indexed: Vec<(Option<f64>, usize)> = values.iter().cloned().enumerate().map(|(i, v)| (v, i)).collect();
+        indexed.sort_by(|a, b| {
+            match (&a.0, &b.0) {
+                (Some(x), Some(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+
+        // Assign ranks
+        let mut result: Vec<Option<f64>> = vec![None; values.len()];
+        for (rank, (val, orig_idx)) in indexed.iter().enumerate() {
+            if val.is_some() {
+                result[*orig_idx] = Some((rank + 1) as f64);
+            }
+        }
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
     }
 }
 
