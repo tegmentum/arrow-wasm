@@ -2346,4 +2346,120 @@ interface compute {
 
     /// Get last element of each list
     list-last: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Advanced Statistical Functions (Phase 20.1) ==========
+
+    /// Calculate weighted average
+    weighted-average: func(values: borrow<array>, weights: borrow<array>) -> result<f64, arrow-error>;
+
+    /// ========== Time Series Operations (Phase 20.2) ==========
+
+    /// Lag with default value for nulls
+    lag-default: func(arr: borrow<array>, offset: u32, default-val: f64) -> result<array, arrow-error>;
+
+    /// Lead with default value for nulls
+    lead-default: func(arr: borrow<array>, offset: u32, default-val: f64) -> result<array, arrow-error>;
+
+    /// Difference between consecutive elements
+    diff: func(arr: borrow<array>, periods: u32) -> result<array, arrow-error>;
+
+    /// Exponential moving average
+    ema: func(arr: borrow<array>, span: u32) -> result<array, arrow-error>;
+
+    /// Simple moving average
+    sma: func(arr: borrow<array>, window: u32) -> result<array, arrow-error>;
+
+    /// Forward fill then backward fill (fill all nulls)
+    fill-null-interpolate: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Phonetic Matching (Phase 20.3) ==========
+
+    /// Metaphone encoding for phonetic matching
+    metaphone: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Double Metaphone encoding (returns primary code)
+    double-metaphone: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// NYSIIS encoding for phonetic matching
+    nysiis: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if two strings match phonetically (Soundex)
+    soundex-match: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Array Manipulation (Phase 20.4) ==========
+
+    /// Rotate array elements by n positions
+    array-rotate: func(arr: borrow<array>, n: s32) -> result<array, arrow-error>;
+
+    /// Split array into chunks of size n (returns list array)
+    array-chunk: func(arr: borrow<array>, chunk-size: u32) -> result<array, arrow-error>;
+
+    /// Zip two arrays into list of pairs
+    array-zip: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Create array of indices where condition is true
+    where-indices: func(condition: borrow<array>) -> result<array, arrow-error>;
+
+    /// Compress array keeping only elements where mask is true
+    compress: func(arr: borrow<array>, mask: borrow<array>) -> result<array, arrow-error>;
+
+    /// Insert value at index
+    array-insert: func(arr: borrow<array>, index: u32, value: f64) -> result<array, arrow-error>;
+
+    /// Delete element at index
+    array-delete: func(arr: borrow<array>, index: u32) -> result<array, arrow-error>;
+
+    /// ========== Numeric Conversions (Phase 20.5) ==========
+
+    /// Convert integer to binary string
+    to-binary-string: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Convert integer to octal string
+    to-octal-string: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Parse binary string to integer
+    from-binary-string: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Parse octal string to integer
+    from-octal-string: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Convert degrees to radians
+    degrees-to-radians: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Convert radians to degrees
+    radians-to-degrees: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Data Quality Metrics (Phase 20.6) ==========
+
+    /// Calculate null ratio (null count / total count)
+    null-ratio: func(arr: borrow<array>) -> result<f64, arrow-error>;
+
+    /// Calculate uniqueness ratio (distinct count / total count)
+    uniqueness-ratio: func(arr: borrow<array>) -> result<f64, arrow-error>;
+
+    /// Calculate completeness (1 - null ratio)
+    completeness: func(arr: borrow<array>) -> result<f64, arrow-error>;
+
+    /// Count values outside of range
+    outlier-count: func(arr: borrow<array>, low: f64, high: f64) -> result<u64, arrow-error>;
+
+    /// Calculate coefficient of variation (stddev / mean)
+    coefficient-of-variation: func(arr: borrow<array>) -> result<f64, arrow-error>;
+
+    /// Count zero values
+    zero-count: func(arr: borrow<array>) -> result<u64, arrow-error>;
+
+    /// Count negative values
+    negative-count: func(arr: borrow<array>) -> result<u64, arrow-error>;
+
+    /// ========== String Pattern Operations (Phase 20.7) ==========
+
+    /// Extract all regex matches as list array
+    regex-extract-all: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// Check if string matches glob pattern
+    glob-match: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
+
+    /// Remove accents/diacritics from strings
+    remove-accents: func(arr: borrow<array>) -> result<array, arrow-error>;
 }

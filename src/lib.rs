@@ -8658,6 +8658,51 @@ fn extract_list_element_last(
     }
 }
 
+/// Convert glob pattern to regex
+fn glob_to_regex(pattern: &str) -> String {
+    let mut regex = String::from("^");
+
+    for c in pattern.chars() {
+        match c {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push('.'),
+            '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' | '\\' => {
+                regex.push('\\');
+                regex.push(c);
+            }
+            _ => regex.push(c),
+        }
+    }
+
+    regex.push('$');
+    regex
+}
+
+/// Strip accents/diacritics from string
+fn strip_accents(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' => 'A',
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' => 'a',
+            'È' | 'É' | 'Ê' | 'Ë' => 'E',
+            'è' | 'é' | 'ê' | 'ë' => 'e',
+            'Ì' | 'Í' | 'Î' | 'Ï' => 'I',
+            'ì' | 'í' | 'î' | 'ï' => 'i',
+            'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' => 'O',
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' => 'o',
+            'Ù' | 'Ú' | 'Û' | 'Ü' => 'U',
+            'ù' | 'ú' | 'û' | 'ü' => 'u',
+            'Ý' | 'Ÿ' => 'Y',
+            'ý' | 'ÿ' => 'y',
+            'Ñ' => 'N',
+            'ñ' => 'n',
+            'Ç' => 'C',
+            'ç' => 'c',
+            _ => c,
+        })
+        .collect()
+}
+
 // ============================================================================
 // Compute implementation (stub - to be expanded)
 // ============================================================================
@@ -24300,6 +24345,698 @@ impl compute::Guest for Component {
         }
 
         Err(compute::ArrowError::InvalidArgument("Expected list array".to_string()))
+    }
+
+    // ========================================================================
+    // Phase 20.1: Advanced Statistical Functions
+    // ========================================================================
+
+    fn weighted_average(
+        values: arrays::ArrayBorrow<'_>,
+        weights: arrays::ArrayBorrow<'_>
+    ) -> Result<f64, compute::ArrowError> {
+        let vals = collect_nullable_f64_values(&values.get::<ArrayImpl>().inner)?;
+        let wgts = collect_nullable_f64_values(&weights.get::<ArrayImpl>().inner)?;
+
+        if vals.len() != wgts.len() {
+            return Err(compute::ArrowError::InvalidArgument("Values and weights must have same length".to_string()));
+        }
+
+        let mut weighted_sum = 0.0;
+        let mut weight_sum = 0.0;
+
+        for (v, w) in vals.iter().zip(wgts.iter()) {
+            if let (Some(val), Some(wgt)) = (v, w) {
+                weighted_sum += val * wgt;
+                weight_sum += wgt;
+            }
+        }
+
+        if weight_sum == 0.0 {
+            return Err(compute::ArrowError::InvalidArgument("Total weight is zero".to_string()));
+        }
+
+        Ok(weighted_sum / weight_sum)
+    }
+
+    // ========================================================================
+    // Phase 20.2: Time Series Operations
+    // ========================================================================
+
+    fn lag_default(arr: arrays::ArrayBorrow<'_>, offset: u32, default_val: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let offset = offset as usize;
+
+        let result: arrow_array::Float64Array = values.iter()
+            .enumerate()
+            .map(|(i, _)| {
+                if i >= offset {
+                    values[i - offset].or(Some(default_val))
+                } else {
+                    Some(default_val)
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn lead_default(arr: arrays::ArrayBorrow<'_>, offset: u32, default_val: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let offset = offset as usize;
+        let len = values.len();
+
+        let result: arrow_array::Float64Array = values.iter()
+            .enumerate()
+            .map(|(i, _)| {
+                if i + offset < len {
+                    values[i + offset].or(Some(default_val))
+                } else {
+                    Some(default_val)
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn diff(arr: arrays::ArrayBorrow<'_>, periods: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let periods = periods as usize;
+
+        let result: arrow_array::Float64Array = values.iter()
+            .enumerate()
+            .map(|(i, v)| {
+                if i >= periods {
+                    match (v, &values[i - periods]) {
+                        (Some(curr), Some(prev)) => Some(curr - prev),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn ema(arr: arrays::ArrayBorrow<'_>, span: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        if span == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Span must be positive".to_string()));
+        }
+
+        let alpha = 2.0 / (span as f64 + 1.0);
+        let mut ema_values: Vec<Option<f64>> = Vec::with_capacity(values.len());
+        let mut prev_ema: Option<f64> = None;
+
+        for v in &values {
+            match (v, prev_ema) {
+                (Some(val), Some(prev)) => {
+                    let new_ema = alpha * val + (1.0 - alpha) * prev;
+                    ema_values.push(Some(new_ema));
+                    prev_ema = Some(new_ema);
+                }
+                (Some(val), None) => {
+                    ema_values.push(Some(*val));
+                    prev_ema = Some(*val);
+                }
+                (None, _) => {
+                    ema_values.push(prev_ema);
+                }
+            }
+        }
+
+        let result: arrow_array::Float64Array = ema_values.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn sma(arr: arrays::ArrayBorrow<'_>, window: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let window = window as usize;
+
+        if window == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Window must be positive".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = values.iter()
+            .enumerate()
+            .map(|(i, _)| {
+                if i + 1 >= window {
+                    let start = i + 1 - window;
+                    let window_values: Vec<f64> = values[start..=i]
+                        .iter()
+                        .filter_map(|v| *v)
+                        .collect();
+                    if window_values.is_empty() {
+                        None
+                    } else {
+                        Some(window_values.iter().sum::<f64>() / window_values.len() as f64)
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn fill_null_interpolate(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        // Forward fill
+        let mut result: Vec<Option<f64>> = Vec::with_capacity(values.len());
+        let mut last_valid: Option<f64> = None;
+
+        for v in &values {
+            if v.is_some() {
+                last_valid = *v;
+                result.push(*v);
+            } else {
+                result.push(last_valid);
+            }
+        }
+
+        // Backward fill remaining
+        last_valid = None;
+        for i in (0..result.len()).rev() {
+            if result[i].is_some() {
+                last_valid = result[i];
+            } else {
+                result[i] = last_valid;
+            }
+        }
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========================================================================
+    // Phase 20.3: Phonetic Matching
+    // ========================================================================
+
+    fn metaphone(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let result: arrow_array::StringArray = strings.iter()
+            .map(|opt| opt.as_ref().map(|s| compute_metaphone(s)))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn double_metaphone(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let result: arrow_array::StringArray = strings.iter()
+            .map(|opt| opt.as_ref().map(|s| compute_double_metaphone(s, false)))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn nysiis(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let result: arrow_array::StringArray = strings.iter()
+            .map(|opt| opt.as_ref().map(|s| compute_nysiis(s)))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn soundex_match(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_inner = &left.get::<ArrayImpl>().inner;
+        let right_inner = &right.get::<ArrayImpl>().inner;
+
+        let left_strings = extract_string_values(left_inner)?;
+        let right_strings = extract_string_values(right_inner)?;
+
+        let result: arrow_array::BooleanArray = left_strings.iter()
+            .zip(right_strings.iter())
+            .map(|(l, r)| {
+                match (l, r) {
+                    (Some(ls), Some(rs)) => Some(compute_soundex(ls) == compute_soundex(rs)),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 20.4: Array Manipulation
+    // ========================================================================
+
+    fn array_rotate(arr: arrays::ArrayBorrow<'_>, n: i32) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let len = values.len();
+
+        if len == 0 {
+            let result: arrow_array::Float64Array = Vec::<Option<f64>>::new().into_iter().collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        let n = ((n % len as i32) + len as i32) as usize % len;
+
+        let mut rotated: Vec<Option<f64>> = Vec::with_capacity(len);
+        for i in 0..len {
+            let src_idx = (i + len - n) % len;
+            rotated.push(values[src_idx]);
+        }
+
+        let result: arrow_array::Float64Array = rotated.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn array_chunk(arr: arrays::ArrayBorrow<'_>, chunk_size: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let chunk_size = chunk_size as usize;
+
+        if chunk_size == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Chunk size must be positive".to_string()));
+        }
+
+        // For simplicity, return as a list of float arrays
+        if let Some(f64_arr) = inner.as_any().downcast_ref::<arrow_array::Float64Array>() {
+            let len = f64_arr.len();
+            let num_chunks = (len + chunk_size - 1) / chunk_size;
+
+            let mut offsets = vec![0i32];
+            let mut all_values: Vec<Option<f64>> = Vec::new();
+
+            for chunk_idx in 0..num_chunks {
+                let start = chunk_idx * chunk_size;
+                let end = (start + chunk_size).min(len);
+                for i in start..end {
+                    all_values.push(if f64_arr.is_null(i) { None } else { Some(f64_arr.value(i)) });
+                }
+                offsets.push(all_values.len() as i32);
+            }
+
+            let values_arr: arrow_array::Float64Array = all_values.into_iter().collect();
+            let offsets_buffer = arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(offsets));
+            let list_arr = arrow_array::ListArray::new(
+                Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float64, true)),
+                offsets_buffer,
+                Arc::new(values_arr),
+                None
+            );
+
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(list_arr) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Unsupported type for array_chunk".to_string()))
+    }
+
+    fn array_zip(left: arrays::ArrayBorrow<'_>, right: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let left_values = collect_nullable_f64_values(&left.get::<ArrayImpl>().inner)?;
+        let right_values = collect_nullable_f64_values(&right.get::<ArrayImpl>().inner)?;
+
+        let len = left_values.len().min(right_values.len());
+
+        let mut offsets = vec![0i32];
+        let mut all_values: Vec<Option<f64>> = Vec::new();
+
+        for i in 0..len {
+            all_values.push(left_values[i]);
+            all_values.push(right_values[i]);
+            offsets.push(all_values.len() as i32);
+        }
+
+        let values_arr: arrow_array::Float64Array = all_values.into_iter().collect();
+        let offsets_buffer = arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(offsets));
+        let list_arr = arrow_array::ListArray::new(
+            Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float64, true)),
+            offsets_buffer,
+            Arc::new(values_arr),
+            None
+        );
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(list_arr) }))
+    }
+
+    fn where_indices(condition: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &condition.get::<ArrayImpl>().inner;
+
+        let bool_arr = inner.as_any().downcast_ref::<arrow_array::BooleanArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected boolean array".to_string()))?;
+
+        let indices: Vec<i64> = bool_arr.iter()
+            .enumerate()
+            .filter_map(|(i, v)| if v == Some(true) { Some(i as i64) } else { None })
+            .collect();
+
+        let result: arrow_array::Int64Array = indices.into_iter().map(Some).collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn compress(arr: arrays::ArrayBorrow<'_>, mask: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let mask_inner = &mask.get::<ArrayImpl>().inner;
+
+        let bool_arr = mask_inner.as_any().downcast_ref::<arrow_array::BooleanArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Mask must be boolean array".to_string()))?;
+
+        if let Some(f64_arr) = inner.as_any().downcast_ref::<arrow_array::Float64Array>() {
+            let result: arrow_array::Float64Array = f64_arr.iter()
+                .zip(bool_arr.iter())
+                .filter_map(|(v, m)| if m == Some(true) { Some(v) } else { None })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(i64_arr) = inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let result: arrow_array::Int64Array = i64_arr.iter()
+                .zip(bool_arr.iter())
+                .filter_map(|(v, m)| if m == Some(true) { Some(v) } else { None })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(str_arr) = inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let result: arrow_array::StringArray = str_arr.iter()
+                .zip(bool_arr.iter())
+                .filter_map(|(v, m)| if m == Some(true) { Some(v.map(|s| s.to_string())) } else { None })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Unsupported type for compress".to_string()))
+    }
+
+    fn array_insert(arr: arrays::ArrayBorrow<'_>, index: u32, value: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let index = index as usize;
+
+        let mut result: Vec<Option<f64>> = Vec::with_capacity(values.len() + 1);
+
+        for (i, v) in values.iter().enumerate() {
+            if i == index {
+                result.push(Some(value));
+            }
+            result.push(*v);
+        }
+
+        if index >= values.len() {
+            result.push(Some(value));
+        }
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn array_delete(arr: arrays::ArrayBorrow<'_>, index: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let index = index as usize;
+
+        if index >= values.len() {
+            return Err(compute::ArrowError::InvalidArgument("Index out of bounds".to_string()));
+        }
+
+        let result: Vec<Option<f64>> = values.iter()
+            .enumerate()
+            .filter(|(i, _)| *i != index)
+            .map(|(_, v)| *v)
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========================================================================
+    // Phase 20.5: Numeric Conversions
+    // ========================================================================
+
+    fn to_binary_string(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(i64_arr) = inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let result: arrow_array::StringArray = i64_arr.iter()
+                .map(|opt| opt.map(|v| format!("{:b}", v)))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(i32_arr) = inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            let result: arrow_array::StringArray = i32_arr.iter()
+                .map(|opt| opt.map(|v| format!("{:b}", v)))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected integer array".to_string()))
+    }
+
+    fn to_octal_string(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(i64_arr) = inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            let result: arrow_array::StringArray = i64_arr.iter()
+                .map(|opt| opt.map(|v| format!("{:o}", v)))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(i32_arr) = inner.as_any().downcast_ref::<arrow_array::Int32Array>() {
+            let result: arrow_array::StringArray = i32_arr.iter()
+                .map(|opt| opt.map(|v| format!("{:o}", v)))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected integer array".to_string()))
+    }
+
+    fn from_binary_string(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let result: arrow_array::Int64Array = strings.iter()
+            .map(|opt| {
+                opt.as_ref().and_then(|s| i64::from_str_radix(s, 2).ok())
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn from_octal_string(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let result: arrow_array::Int64Array = strings.iter()
+            .map(|opt| {
+                opt.as_ref().and_then(|s| i64::from_str_radix(s, 8).ok())
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn degrees_to_radians(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::Float64Array = values.iter()
+            .map(|opt| opt.map(|v| v * std::f64::consts::PI / 180.0))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn radians_to_degrees(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::Float64Array = values.iter()
+            .map(|opt| opt.map(|v| v * 180.0 / std::f64::consts::PI))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 20.6: Data Quality Metrics
+    // ========================================================================
+
+    fn null_ratio(arr: arrays::ArrayBorrow<'_>) -> Result<f64, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let total = inner.len();
+
+        if total == 0 {
+            return Ok(0.0);
+        }
+
+        let null_count = inner.null_count();
+        Ok(null_count as f64 / total as f64)
+    }
+
+    fn uniqueness_ratio(arr: arrays::ArrayBorrow<'_>) -> Result<f64, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let total = inner.len();
+
+        if total == 0 {
+            return Ok(0.0);
+        }
+
+        let mut unique: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+        if let Some(f64_arr) = inner.as_any().downcast_ref::<arrow_array::Float64Array>() {
+            for i in 0..f64_arr.len() {
+                if !f64_arr.is_null(i) {
+                    unique.insert(f64_arr.value(i).to_bits());
+                }
+            }
+        } else if let Some(i64_arr) = inner.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            for i in 0..i64_arr.len() {
+                if !i64_arr.is_null(i) {
+                    unique.insert(i64_arr.value(i) as u64);
+                }
+            }
+        } else if let Some(str_arr) = inner.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let mut str_set: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for i in 0..str_arr.len() {
+                if !str_arr.is_null(i) {
+                    str_set.insert(str_arr.value(i));
+                }
+            }
+            return Ok(str_set.len() as f64 / total as f64);
+        } else {
+            return Err(compute::ArrowError::InvalidArgument("Unsupported type for uniqueness_ratio".to_string()));
+        }
+
+        Ok(unique.len() as f64 / total as f64)
+    }
+
+    fn completeness(arr: arrays::ArrayBorrow<'_>) -> Result<f64, compute::ArrowError> {
+        let ratio = Self::null_ratio(arr)?;
+        Ok(1.0 - ratio)
+    }
+
+    fn outlier_count(arr: arrays::ArrayBorrow<'_>, low: f64, high: f64) -> Result<u64, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let count = values.iter()
+            .filter(|v| {
+                if let Some(val) = v {
+                    *val < low || *val > high
+                } else {
+                    false
+                }
+            })
+            .count();
+
+        Ok(count as u64)
+    }
+
+    fn coefficient_of_variation(arr: arrays::ArrayBorrow<'_>) -> Result<f64, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let nums: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+
+        if nums.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("No values for coefficient of variation".to_string()));
+        }
+
+        let mean = nums.iter().sum::<f64>() / nums.len() as f64;
+
+        if mean == 0.0 {
+            return Err(compute::ArrowError::InvalidArgument("Mean is zero, coefficient of variation undefined".to_string()));
+        }
+
+        let variance = nums.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / nums.len() as f64;
+        let stddev = variance.sqrt();
+
+        Ok(stddev / mean.abs())
+    }
+
+    fn zero_count(arr: arrays::ArrayBorrow<'_>) -> Result<u64, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let count = values.iter()
+            .filter(|v| matches!(v, Some(val) if *val == 0.0))
+            .count();
+
+        Ok(count as u64)
+    }
+
+    fn negative_count(arr: arrays::ArrayBorrow<'_>) -> Result<u64, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let count = values.iter()
+            .filter(|v| matches!(v, Some(val) if *val < 0.0))
+            .count();
+
+        Ok(count as u64)
+    }
+
+    // ========================================================================
+    // Phase 20.7: String Pattern Operations
+    // ========================================================================
+
+    fn regex_extract_all(arr: arrays::ArrayBorrow<'_>, pattern: String) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let re = regex::Regex::new(&pattern)
+            .map_err(|e| compute::ArrowError::InvalidArgument(format!("Invalid regex: {}", e)))?;
+
+        let mut offsets = vec![0i32];
+        let mut all_matches: Vec<Option<String>> = Vec::new();
+
+        for opt in &strings {
+            if let Some(s) = opt {
+                for m in re.find_iter(s) {
+                    all_matches.push(Some(m.as_str().to_string()));
+                }
+            }
+            offsets.push(all_matches.len() as i32);
+        }
+
+        let values_arr: arrow_array::StringArray = all_matches.into_iter().collect();
+        let offsets_buffer = arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(offsets));
+        let list_arr = arrow_array::ListArray::new(
+            Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Utf8, true)),
+            offsets_buffer,
+            Arc::new(values_arr),
+            None
+        );
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(list_arr) }))
+    }
+
+    fn glob_match(arr: arrays::ArrayBorrow<'_>, pattern: String) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        // Convert glob to regex
+        let regex_pattern = glob_to_regex(&pattern);
+        let re = regex::Regex::new(&regex_pattern)
+            .map_err(|e| compute::ArrowError::InvalidArgument(format!("Invalid glob pattern: {}", e)))?;
+
+        let result: arrow_array::BooleanArray = strings.iter()
+            .map(|opt| {
+                opt.as_ref().map(|s| re.is_match(s))
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn remove_accents(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let result: arrow_array::StringArray = strings.iter()
+            .map(|opt| opt.as_ref().map(|s| strip_accents(s)))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
     }
 }
 
