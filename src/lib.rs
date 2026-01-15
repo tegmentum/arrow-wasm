@@ -739,6 +739,17 @@ fn extract_string_at_index(arr: &Arc<dyn arrow_array::Array>, idx: usize) -> Opt
     None
 }
 
+/// Extract all string values from a string array
+fn extract_string_values(arr: &Arc<dyn arrow_array::Array>) -> Result<Vec<Option<String>>, compute::ArrowError> {
+    if let Some(str_arr) = arr.as_any().downcast_ref::<arrow_array::StringArray>() {
+        return Ok(str_arr.iter().map(|opt| opt.map(|s| s.to_string())).collect());
+    }
+    if let Some(str_arr) = arr.as_any().downcast_ref::<arrow_array::LargeStringArray>() {
+        return Ok(str_arr.iter().map(|opt| opt.map(|s| s.to_string())).collect());
+    }
+    Err(compute::ArrowError::InvalidArgument("Expected string array".to_string()))
+}
+
 // Helper functions for window operations
 
 /// Compute partition boundaries and sort indices for window functions
@@ -8099,6 +8110,552 @@ fn take_batch(batch: &ArrowRecordBatch, indices: &arrow_array::UInt64Array) -> R
         .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
 
     Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+}
+
+// ============================================================================
+// Phase 19 Helper Functions
+// ============================================================================
+
+/// Format timestamp from seconds and nanoseconds using strftime-like format
+fn format_timestamp(secs: i64, nsecs: u32, format: &str) -> String {
+    // Convert to date/time components
+    let total_days = if secs >= 0 { secs / 86400 } else { (secs - 86399) / 86400 };
+    let day_secs = secs - total_days * 86400;
+
+    let hour = (day_secs / 3600) as i32;
+    let minute = ((day_secs % 3600) / 60) as i32;
+    let second = (day_secs % 60) as i32;
+
+    let (year, month, day) = days_to_ymd(total_days as i32);
+
+    // Replace format specifiers
+    format.replace("%Y", &format!("{:04}", year))
+        .replace("%m", &format!("{:02}", month))
+        .replace("%d", &format!("{:02}", day))
+        .replace("%H", &format!("{:02}", hour))
+        .replace("%M", &format!("{:02}", minute))
+        .replace("%S", &format!("{:02}", second))
+        .replace("%f", &format!("{:06}", nsecs / 1000))  // microseconds
+        .replace("%j", &format!("{:03}", day_of_year_from_days(total_days as i32)))
+}
+
+/// Format date from days since epoch
+fn format_date_from_days(days: i64, format: &str) -> String {
+    let (year, month, day) = days_to_ymd(days as i32);
+    let dow = day_of_week_from_days(days as i32);
+    let doy = day_of_year_from_days(days as i32);
+
+    format.replace("%Y", &format!("{:04}", year))
+        .replace("%m", &format!("{:02}", month))
+        .replace("%d", &format!("{:02}", day))
+        .replace("%j", &format!("{:03}", doy))
+        .replace("%w", &format!("{}", dow))
+}
+
+/// Parse timestamp string to microseconds since epoch
+fn parse_timestamp_string(s: &str, format: &str) -> Option<i64> {
+    // Simple parser for common formats
+    let parts: Vec<&str> = s.split(|c: char| !c.is_numeric()).filter(|p| !p.is_empty()).collect();
+
+    if format.contains("%Y-%m-%d") || format.contains("%Y/%m/%d") {
+        if parts.len() >= 3 {
+            let year: i32 = parts[0].parse().ok()?;
+            let month: u32 = parts[1].parse().ok()?;
+            let day: u32 = parts[2].parse().ok()?;
+
+            let days = ymd_to_days(year, month, day);
+
+            let hour: i64 = parts.get(3).and_then(|p| p.parse().ok()).unwrap_or(0);
+            let minute: i64 = parts.get(4).and_then(|p| p.parse().ok()).unwrap_or(0);
+            let second: i64 = parts.get(5).and_then(|p| p.parse().ok()).unwrap_or(0);
+
+            let total_secs = (days as i64) * 86400 + hour * 3600 + minute * 60 + second;
+            return Some(total_secs * 1_000_000);
+        }
+    }
+
+    // Try ISO 8601 format as default
+    if parts.len() >= 6 {
+        let year: i32 = parts[0].parse().ok()?;
+        let month: u32 = parts[1].parse().ok()?;
+        let day: u32 = parts[2].parse().ok()?;
+        let hour: i64 = parts[3].parse().ok()?;
+        let minute: i64 = parts[4].parse().ok()?;
+        let second: i64 = parts[5].parse().ok()?;
+
+        let days = ymd_to_days(year, month, day);
+        let total_secs = (days as i64) * 86400 + hour * 3600 + minute * 60 + second;
+        return Some(total_secs * 1_000_000);
+    }
+
+    None
+}
+
+/// Parse date string to days since epoch
+fn parse_date_string(s: &str, _format: &str) -> Option<i32> {
+    let parts: Vec<&str> = s.split(|c: char| !c.is_numeric()).filter(|p| !p.is_empty()).collect();
+
+    if parts.len() >= 3 {
+        let year: i32 = parts[0].parse().ok()?;
+        let month: u32 = parts[1].parse().ok()?;
+        let day: u32 = parts[2].parse().ok()?;
+        return Some(ymd_to_days(year, month, day));
+    }
+
+    None
+}
+
+/// Extract timestamp component (year, month, day, hour, minute, second)
+fn extract_timestamp_component(microseconds: i64, component: &str) -> i32 {
+    let secs = microseconds / 1_000_000;
+    let total_days = if secs >= 0 { secs / 86400 } else { (secs - 86399) / 86400 };
+    let day_secs = secs - total_days * 86400;
+
+    let (year, month, day) = days_to_ymd(total_days as i32);
+    let day = day as i32;
+
+    match component {
+        "year" => year,
+        "month" => month,
+        "day" => day,
+        "hour" => (day_secs / 3600) as i32,
+        "minute" => ((day_secs % 3600) / 60) as i32,
+        "second" => (day_secs % 60) as i32,
+        _ => 0,
+    }
+}
+
+/// Format number with thousand separator and decimal separator
+fn format_number_with_separators(value: f64, decimal_places: u32, group_sep: &str, decimal_sep: &str) -> String {
+    let rounded = format!("{:.prec$}", value.abs(), prec = decimal_places as usize);
+    let parts: Vec<&str> = rounded.split('.').collect();
+
+    let integer_part = parts[0];
+    let decimal_part = parts.get(1).unwrap_or(&"");
+
+    // Add thousand separators
+    let chars: Vec<char> = integer_part.chars().collect();
+    let mut with_seps = String::new();
+    for (i, c) in chars.iter().enumerate() {
+        if i > 0 && (chars.len() - i) % 3 == 0 {
+            with_seps.push_str(group_sep);
+        }
+        with_seps.push(*c);
+    }
+
+    let sign = if value < 0.0 { "-" } else { "" };
+    if decimal_places > 0 {
+        format!("{}{}{}{}", sign, with_seps, decimal_sep, decimal_part)
+    } else {
+        format!("{}{}", sign, with_seps)
+    }
+}
+
+/// Extract days from date array (Date32 or Date64)
+fn extract_days_from_date_array(inner: &Arc<dyn arrow_array::Array>) -> Result<Vec<Option<i32>>, compute::ArrowError> {
+    if let Some(date_arr) = inner.as_any().downcast_ref::<arrow_array::Date32Array>() {
+        return Ok(date_arr.iter().collect());
+    }
+
+    if let Some(date_arr) = inner.as_any().downcast_ref::<arrow_array::Date64Array>() {
+        return Ok(date_arr.iter().map(|opt| opt.map(|ms| (ms / 86_400_000) as i32)).collect());
+    }
+
+    // Also support timestamps
+    if let Some(ts_arr) = inner.as_any().downcast_ref::<arrow_array::TimestampMicrosecondArray>() {
+        return Ok(ts_arr.iter().map(|opt| opt.map(|us| (us / 86_400_000_000) as i32)).collect());
+    }
+
+    Err(compute::ArrowError::InvalidArgument("Expected date or timestamp array".to_string()))
+}
+
+/// Get day of week from days since epoch (0=Sunday, 6=Saturday)
+fn day_of_week_from_days(days: i32) -> i32 {
+    // Jan 1, 1970 was a Thursday (4)
+    let dow = (days + 4) % 7;
+    if dow < 0 { dow + 7 } else { dow }
+}
+
+/// Get day of year from days since epoch (1-366)
+fn day_of_year_from_days(days: i32) -> i32 {
+    let (year, month, day) = days_to_ymd(days);
+    let jan1 = ymd_to_days(year, 1, 1);
+    days - jan1 + 1
+}
+
+/// Get ISO week of year from days since epoch
+fn iso_week_of_year_from_days(days: i32) -> i32 {
+    let (year, _, _) = days_to_ymd(days);
+
+    // Find the Thursday of the week containing this date
+    let dow = day_of_week_from_days(days);
+    let dow_mon = if dow == 0 { 6 } else { dow - 1 };  // Convert to Monday=0
+    let thursday = days + (3 - dow_mon);
+
+    // Find what year that Thursday belongs to
+    let (thu_year, _, _) = days_to_ymd(thursday);
+
+    // Find January 4th of that year (always in week 1)
+    let jan4 = ymd_to_days(thu_year, 1, 4);
+    let jan4_dow = day_of_week_from_days(jan4);
+    let jan4_dow_mon = if jan4_dow == 0 { 6 } else { jan4_dow - 1 };
+
+    // Find the Monday of week 1
+    let week1_monday = jan4 - jan4_dow_mon;
+
+    // Calculate week number
+    ((thursday - week1_monday) / 7) + 1
+}
+
+/// Check if year is a leap year
+fn is_leap_year_calc(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+/// Add business days to a date
+fn add_business_days_impl(days: i32, business_days: i32) -> i32 {
+    let mut current = days;
+    let mut remaining = business_days.abs();
+    let direction = if business_days >= 0 { 1 } else { -1 };
+
+    while remaining > 0 {
+        current += direction;
+        let dow = day_of_week_from_days(current);
+        if dow != 0 && dow != 6 {  // Not weekend
+            remaining -= 1;
+        }
+    }
+
+    current
+}
+
+/// Count business days between two dates
+fn count_business_days(start: i32, end: i32) -> i32 {
+    if start == end {
+        return 0;
+    }
+
+    let (from, to) = if start < end { (start, end) } else { (end, start) };
+    let sign = if start < end { 1 } else { -1 };
+
+    let mut count = 0;
+    for d in (from + 1)..=to {
+        let dow = day_of_week_from_days(d);
+        if dow != 0 && dow != 6 {
+            count += 1;
+        }
+    }
+
+    count * sign
+}
+
+/// URL percent encode string
+fn percent_encode_string(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() * 3);
+    for c in s.bytes() {
+        match c {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(c as char);
+            }
+            _ => {
+                result.push_str(&format!("%{:02X}", c));
+            }
+        }
+    }
+    result
+}
+
+/// URL percent decode string
+fn percent_decode_string(s: &str) -> String {
+    let mut result = Vec::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(
+                std::str::from_utf8(&bytes[i+1..i+3]).unwrap_or(""),
+                16
+            ) {
+                result.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+
+    String::from_utf8_lossy(&result).to_string()
+}
+
+/// HTML entity encode
+fn html_escape_string(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+/// HTML entity decode
+fn html_unescape_string(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&apos;", "'")
+}
+
+/// Escape regex special characters
+fn escape_regex_chars(s: &str) -> String {
+    let special = ['\\', '.', '+', '*', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$'];
+    let mut result = String::with_capacity(s.len() * 2);
+    for c in s.chars() {
+        if special.contains(&c) {
+            result.push('\\');
+        }
+        result.push(c);
+    }
+    result
+}
+
+/// Aggregate values from a list element array
+fn aggregate_list_values(values: &Arc<dyn arrow_array::Array>, op: &str) -> Option<f64> {
+    let mut nums: Vec<f64> = Vec::new();
+
+    if let Some(arr) = values.as_any().downcast_ref::<arrow_array::Float64Array>() {
+        for i in 0..arr.len() {
+            if !arr.is_null(i) {
+                nums.push(arr.value(i));
+            }
+        }
+    } else if let Some(arr) = values.as_any().downcast_ref::<arrow_array::Int64Array>() {
+        for i in 0..arr.len() {
+            if !arr.is_null(i) {
+                nums.push(arr.value(i) as f64);
+            }
+        }
+    } else if let Some(arr) = values.as_any().downcast_ref::<arrow_array::Int32Array>() {
+        for i in 0..arr.len() {
+            if !arr.is_null(i) {
+                nums.push(arr.value(i) as f64);
+            }
+        }
+    } else if let Some(arr) = values.as_any().downcast_ref::<arrow_array::Float32Array>() {
+        for i in 0..arr.len() {
+            if !arr.is_null(i) {
+                nums.push(arr.value(i) as f64);
+            }
+        }
+    } else {
+        return None;
+    }
+
+    if nums.is_empty() {
+        return None;
+    }
+
+    match op {
+        "sum" => Some(nums.iter().sum()),
+        "mean" => Some(nums.iter().sum::<f64>() / nums.len() as f64),
+        "min" => nums.iter().copied().reduce(f64::min),
+        "max" => nums.iter().copied().reduce(f64::max),
+        _ => None,
+    }
+}
+
+/// Check if list contains a value (as string comparison)
+fn list_contains_value(values: &Arc<dyn arrow_array::Array>, target: &str) -> bool {
+    if let Some(arr) = values.as_any().downcast_ref::<arrow_array::StringArray>() {
+        for i in 0..arr.len() {
+            if !arr.is_null(i) && arr.value(i) == target {
+                return true;
+            }
+        }
+    } else if let Some(arr) = values.as_any().downcast_ref::<arrow_array::Int64Array>() {
+        if let Ok(target_val) = target.parse::<i64>() {
+            for i in 0..arr.len() {
+                if !arr.is_null(i) && arr.value(i) == target_val {
+                    return true;
+                }
+            }
+        }
+    } else if let Some(arr) = values.as_any().downcast_ref::<arrow_array::Float64Array>() {
+        if let Ok(target_val) = target.parse::<f64>() {
+            for i in 0..arr.len() {
+                if !arr.is_null(i) && (arr.value(i) - target_val).abs() < f64::EPSILON {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Extract first element from each list in a list array
+fn extract_list_element(
+    list_arr: &arrow_array::ListArray,
+    index: usize,
+    elem_type: Option<arrow_schema::DataType>
+) -> Result<arrays::Array, compute::ArrowError> {
+    use arrow_schema::DataType;
+
+    let elem_type = elem_type.unwrap_or(DataType::Float64);
+
+    match elem_type {
+        DataType::Float64 => {
+            let result: arrow_array::Float64Array = (0..list_arr.len())
+                .map(|i| {
+                    if list_arr.is_null(i) {
+                        None
+                    } else {
+                        let values = list_arr.value(i);
+                        if index < values.len() {
+                            if let Some(arr) = values.as_any().downcast_ref::<arrow_array::Float64Array>() {
+                                if !arr.is_null(index) {
+                                    return Some(arr.value(index));
+                                }
+                            }
+                        }
+                        None
+                    }
+                })
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        }
+        DataType::Int64 => {
+            let result: arrow_array::Int64Array = (0..list_arr.len())
+                .map(|i| {
+                    if list_arr.is_null(i) {
+                        None
+                    } else {
+                        let values = list_arr.value(i);
+                        if index < values.len() {
+                            if let Some(arr) = values.as_any().downcast_ref::<arrow_array::Int64Array>() {
+                                if !arr.is_null(index) {
+                                    return Some(arr.value(index));
+                                }
+                            }
+                        }
+                        None
+                    }
+                })
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        }
+        DataType::Utf8 => {
+            let result: arrow_array::StringArray = (0..list_arr.len())
+                .map(|i| {
+                    if list_arr.is_null(i) {
+                        None
+                    } else {
+                        let values = list_arr.value(i);
+                        if index < values.len() {
+                            if let Some(arr) = values.as_any().downcast_ref::<arrow_array::StringArray>() {
+                                if !arr.is_null(index) {
+                                    return Some(arr.value(index).to_string());
+                                }
+                            }
+                        }
+                        None
+                    }
+                })
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        }
+        _ => {
+            // Default to Float64 for unsupported types
+            let result: arrow_array::Float64Array = std::iter::repeat(None)
+                .take(list_arr.len())
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        }
+    }
+}
+
+/// Extract last element from each list in a list array
+fn extract_list_element_last(
+    list_arr: &arrow_array::ListArray,
+    elem_type: Option<arrow_schema::DataType>
+) -> Result<arrays::Array, compute::ArrowError> {
+    use arrow_schema::DataType;
+
+    let elem_type = elem_type.unwrap_or(DataType::Float64);
+
+    match elem_type {
+        DataType::Float64 => {
+            let result: arrow_array::Float64Array = (0..list_arr.len())
+                .map(|i| {
+                    if list_arr.is_null(i) {
+                        None
+                    } else {
+                        let values = list_arr.value(i);
+                        if values.len() > 0 {
+                            let index = values.len() - 1;
+                            if let Some(arr) = values.as_any().downcast_ref::<arrow_array::Float64Array>() {
+                                if !arr.is_null(index) {
+                                    return Some(arr.value(index));
+                                }
+                            }
+                        }
+                        None
+                    }
+                })
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        }
+        DataType::Int64 => {
+            let result: arrow_array::Int64Array = (0..list_arr.len())
+                .map(|i| {
+                    if list_arr.is_null(i) {
+                        None
+                    } else {
+                        let values = list_arr.value(i);
+                        if values.len() > 0 {
+                            let index = values.len() - 1;
+                            if let Some(arr) = values.as_any().downcast_ref::<arrow_array::Int64Array>() {
+                                if !arr.is_null(index) {
+                                    return Some(arr.value(index));
+                                }
+                            }
+                        }
+                        None
+                    }
+                })
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        }
+        DataType::Utf8 => {
+            let result: arrow_array::StringArray = (0..list_arr.len())
+                .map(|i| {
+                    if list_arr.is_null(i) {
+                        None
+                    } else {
+                        let values = list_arr.value(i);
+                        if values.len() > 0 {
+                            let index = values.len() - 1;
+                            if let Some(arr) = values.as_any().downcast_ref::<arrow_array::StringArray>() {
+                                if !arr.is_null(index) {
+                                    return Some(arr.value(index).to_string());
+                                }
+                            }
+                        }
+                        None
+                    }
+                })
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        }
+        _ => {
+            let result: arrow_array::Float64Array = std::iter::repeat(None)
+                .take(list_arr.len())
+                .collect();
+            Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+        }
+    }
 }
 
 // ============================================================================
@@ -22987,6 +23544,762 @@ impl compute::Guest for Component {
 
         let result_arr: arrow_array::Float64Array = result.into_iter().collect();
         Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========================================================================
+    // Phase 19.1: Date/Time Formatting
+    // ========================================================================
+
+    fn timestamp_format(arr: arrays::ArrayBorrow<'_>, format: String) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        // Try different timestamp types
+        if let Some(ts_arr) = inner.as_any().downcast_ref::<arrow_array::TimestampMicrosecondArray>() {
+            let result: arrow_array::StringArray = ts_arr.iter()
+                .map(|opt| {
+                    opt.map(|v| {
+                        let secs = v / 1_000_000;
+                        let nsecs = ((v % 1_000_000) * 1000) as u32;
+                        format_timestamp(secs, nsecs, &format)
+                    })
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(ts_arr) = inner.as_any().downcast_ref::<arrow_array::TimestampMillisecondArray>() {
+            let result: arrow_array::StringArray = ts_arr.iter()
+                .map(|opt| {
+                    opt.map(|v| {
+                        let secs = v / 1_000;
+                        let nsecs = ((v % 1_000) * 1_000_000) as u32;
+                        format_timestamp(secs, nsecs, &format)
+                    })
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(ts_arr) = inner.as_any().downcast_ref::<arrow_array::TimestampSecondArray>() {
+            let result: arrow_array::StringArray = ts_arr.iter()
+                .map(|opt| {
+                    opt.map(|v| format_timestamp(v, 0, &format))
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(ts_arr) = inner.as_any().downcast_ref::<arrow_array::TimestampNanosecondArray>() {
+            let result: arrow_array::StringArray = ts_arr.iter()
+                .map(|opt| {
+                    opt.map(|v| {
+                        let secs = v / 1_000_000_000;
+                        let nsecs = (v % 1_000_000_000) as u32;
+                        format_timestamp(secs, nsecs, &format)
+                    })
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected timestamp array".to_string()))
+    }
+
+    fn date_format(arr: arrays::ArrayBorrow<'_>, format: String) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(date_arr) = inner.as_any().downcast_ref::<arrow_array::Date32Array>() {
+            let result: arrow_array::StringArray = date_arr.iter()
+                .map(|opt| {
+                    opt.map(|days| format_date_from_days(days as i64, &format))
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(date_arr) = inner.as_any().downcast_ref::<arrow_array::Date64Array>() {
+            let result: arrow_array::StringArray = date_arr.iter()
+                .map(|opt| {
+                    opt.map(|ms| {
+                        let days = ms / 86_400_000;
+                        format_date_from_days(days, &format)
+                    })
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected date array".to_string()))
+    }
+
+    fn timestamp_parse(arr: arrays::ArrayBorrow<'_>, format: String) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let result: arrow_array::TimestampMicrosecondArray = strings.iter()
+            .map(|opt| {
+                opt.as_ref().and_then(|s| parse_timestamp_string(s, &format))
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn date_parse(arr: arrays::ArrayBorrow<'_>, format: String) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let result: arrow_array::Date32Array = strings.iter()
+            .map(|opt| {
+                opt.as_ref().and_then(|s| parse_date_string(s, &format))
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn timestamp_component(arr: arrays::ArrayBorrow<'_>, component: String) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        // Extract microseconds from various timestamp types
+        let micros: Vec<Option<i64>> = if let Some(ts_arr) = inner.as_any().downcast_ref::<arrow_array::TimestampMicrosecondArray>() {
+            ts_arr.iter().collect()
+        } else if let Some(ts_arr) = inner.as_any().downcast_ref::<arrow_array::TimestampMillisecondArray>() {
+            ts_arr.iter().map(|opt| opt.map(|v| v * 1000)).collect()
+        } else if let Some(ts_arr) = inner.as_any().downcast_ref::<arrow_array::TimestampSecondArray>() {
+            ts_arr.iter().map(|opt| opt.map(|v| v * 1_000_000)).collect()
+        } else if let Some(ts_arr) = inner.as_any().downcast_ref::<arrow_array::TimestampNanosecondArray>() {
+            ts_arr.iter().map(|opt| opt.map(|v| v / 1000)).collect()
+        } else {
+            return Err(compute::ArrowError::InvalidArgument("Expected timestamp array".to_string()));
+        };
+
+        let result: arrow_array::Int32Array = micros.iter()
+            .map(|opt| {
+                opt.map(|us| extract_timestamp_component(us, &component))
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 19.2: Conditional/Case Operations
+    // ========================================================================
+
+    fn case_when(
+        condition: arrays::ArrayBorrow<'_>,
+        then_val: arrays::ArrayBorrow<'_>,
+        else_val: arrays::ArrayBorrow<'_>
+    ) -> Result<arrays::Array, compute::ArrowError> {
+        let cond_inner = &condition.get::<ArrayImpl>().inner;
+        let then_inner = &then_val.get::<ArrayImpl>().inner;
+        let else_inner = &else_val.get::<ArrayImpl>().inner;
+
+        let bool_arr = cond_inner.as_any().downcast_ref::<arrow_array::BooleanArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Condition must be boolean array".to_string()))?;
+
+        // Type dispatch for then/else arrays
+        if let (Some(then_arr), Some(else_arr)) = (
+            then_inner.as_any().downcast_ref::<arrow_array::Int64Array>(),
+            else_inner.as_any().downcast_ref::<arrow_array::Int64Array>()
+        ) {
+            let result: arrow_array::Int64Array = bool_arr.iter()
+                .enumerate()
+                .map(|(i, cond)| {
+                    match cond {
+                        Some(true) => if then_arr.is_null(i) { None } else { Some(then_arr.value(i)) },
+                        Some(false) => if else_arr.is_null(i) { None } else { Some(else_arr.value(i)) },
+                        None => None,
+                    }
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let (Some(then_arr), Some(else_arr)) = (
+            then_inner.as_any().downcast_ref::<arrow_array::Float64Array>(),
+            else_inner.as_any().downcast_ref::<arrow_array::Float64Array>()
+        ) {
+            let result: arrow_array::Float64Array = bool_arr.iter()
+                .enumerate()
+                .map(|(i, cond)| {
+                    match cond {
+                        Some(true) => if then_arr.is_null(i) { None } else { Some(then_arr.value(i)) },
+                        Some(false) => if else_arr.is_null(i) { None } else { Some(else_arr.value(i)) },
+                        None => None,
+                    }
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let (Some(then_arr), Some(else_arr)) = (
+            then_inner.as_any().downcast_ref::<arrow_array::StringArray>(),
+            else_inner.as_any().downcast_ref::<arrow_array::StringArray>()
+        ) {
+            let result: arrow_array::StringArray = bool_arr.iter()
+                .enumerate()
+                .map(|(i, cond)| {
+                    match cond {
+                        Some(true) => if then_arr.is_null(i) { None } else { Some(then_arr.value(i).to_string()) },
+                        Some(false) => if else_arr.is_null(i) { None } else { Some(else_arr.value(i).to_string()) },
+                        None => None,
+                    }
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let (Some(then_arr), Some(else_arr)) = (
+            then_inner.as_any().downcast_ref::<arrow_array::BooleanArray>(),
+            else_inner.as_any().downcast_ref::<arrow_array::BooleanArray>()
+        ) {
+            let result: arrow_array::BooleanArray = bool_arr.iter()
+                .enumerate()
+                .map(|(i, cond)| {
+                    match cond {
+                        Some(true) => if then_arr.is_null(i) { None } else { Some(then_arr.value(i)) },
+                        Some(false) => if else_arr.is_null(i) { None } else { Some(else_arr.value(i)) },
+                        None => None,
+                    }
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Unsupported type for case_when".to_string()))
+    }
+
+    fn decode(
+        arr: arrays::ArrayBorrow<'_>,
+        search_values: Vec<String>,
+        result_values: Vec<String>,
+        default_value: Option<String>
+    ) -> Result<arrays::Array, compute::ArrowError> {
+        if search_values.len() != result_values.len() {
+            return Err(compute::ArrowError::InvalidArgument("search_values and result_values must have same length".to_string()));
+        }
+
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let result: arrow_array::StringArray = strings.iter()
+            .map(|opt| {
+                opt.as_ref().and_then(|s| {
+                    for (i, search) in search_values.iter().enumerate() {
+                        if s == search {
+                            return Some(result_values[i].clone());
+                        }
+                    }
+                    default_value.clone()
+                })
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 19.3: String Formatting
+    // ========================================================================
+
+    fn format_number(arr: arrays::ArrayBorrow<'_>, decimal_places: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::StringArray = values.iter()
+            .map(|opt| {
+                opt.map(|v| format!("{:.prec$}", v, prec = decimal_places as usize))
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn format_number_grouped(
+        arr: arrays::ArrayBorrow<'_>,
+        decimal_places: u32,
+        group_sep: String,
+        decimal_sep: String
+    ) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::StringArray = values.iter()
+            .map(|opt| {
+                opt.map(|v| format_number_with_separators(v, decimal_places, &group_sep, &decimal_sep))
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn format_currency(arr: arrays::ArrayBorrow<'_>, symbol: String, decimal_places: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::StringArray = values.iter()
+            .map(|opt| {
+                opt.map(|v| {
+                    let formatted = format_number_with_separators(v, decimal_places, ",", ".");
+                    format!("{}{}", symbol, formatted)
+                })
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn format_percent(arr: arrays::ArrayBorrow<'_>, decimal_places: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::StringArray = values.iter()
+            .map(|opt| {
+                opt.map(|v| format!("{:.prec$}%", v * 100.0, prec = decimal_places as usize))
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn lpad(arr: arrays::ArrayBorrow<'_>, width: u32, pad_char: String) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+        let pad = pad_char.chars().next().unwrap_or(' ');
+
+        let result: arrow_array::StringArray = strings.iter()
+            .map(|opt| {
+                opt.as_ref().map(|s| {
+                    let len = s.chars().count();
+                    if len >= width as usize {
+                        s.clone()
+                    } else {
+                        let padding: String = std::iter::repeat(pad).take(width as usize - len).collect();
+                        format!("{}{}", padding, s)
+                    }
+                })
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn rpad(arr: arrays::ArrayBorrow<'_>, width: u32, pad_char: String) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+        let pad = pad_char.chars().next().unwrap_or(' ');
+
+        let result: arrow_array::StringArray = strings.iter()
+            .map(|opt| {
+                opt.as_ref().map(|s| {
+                    let len = s.chars().count();
+                    if len >= width as usize {
+                        s.clone()
+                    } else {
+                        let padding: String = std::iter::repeat(pad).take(width as usize - len).collect();
+                        format!("{}{}", s, padding)
+                    }
+                })
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 19.4: Calendar Operations
+    // ========================================================================
+
+    fn is_weekend(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let days = extract_days_from_date_array(inner)?;
+
+        let result: arrow_array::BooleanArray = days.iter()
+            .map(|opt| {
+                opt.map(|d| {
+                    let dow = day_of_week_from_days(d);
+                    dow == 0 || dow == 6  // Sunday or Saturday
+                })
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn is_weekday(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let days = extract_days_from_date_array(inner)?;
+
+        let result: arrow_array::BooleanArray = days.iter()
+            .map(|opt| {
+                opt.map(|d| {
+                    let dow = day_of_week_from_days(d);
+                    dow >= 1 && dow <= 5  // Monday to Friday
+                })
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn day_of_week(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let days = extract_days_from_date_array(inner)?;
+
+        let result: arrow_array::Int32Array = days.iter()
+            .map(|opt| opt.map(|d| day_of_week_from_days(d)))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn day_of_year(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let days = extract_days_from_date_array(inner)?;
+
+        let result: arrow_array::Int32Array = days.iter()
+            .map(|opt| opt.map(|d| day_of_year_from_days(d)))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn week_of_year(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let days = extract_days_from_date_array(inner)?;
+
+        let result: arrow_array::Int32Array = days.iter()
+            .map(|opt| opt.map(|d| iso_week_of_year_from_days(d)))
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn quarter(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let days = extract_days_from_date_array(inner)?;
+
+        let result: arrow_array::Int32Array = days.iter()
+            .map(|opt| {
+                opt.map(|d| {
+                    let (_, month, _) = days_to_ymd(d);
+                    ((month - 1) / 3) + 1
+                })
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn is_leap_year(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let days = extract_days_from_date_array(inner)?;
+
+        let result: arrow_array::BooleanArray = days.iter()
+            .map(|opt| {
+                opt.map(|d| {
+                    let (year, _, _) = days_to_ymd(d);
+                    is_leap_year_calc(year)
+                })
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn add_business_days(arr: arrays::ArrayBorrow<'_>, days_to_add: i32) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(date_arr) = inner.as_any().downcast_ref::<arrow_array::Date32Array>() {
+            let result: arrow_array::Date32Array = date_arr.iter()
+                .map(|opt| opt.map(|d| add_business_days_impl(d, days_to_add)))
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        if let Some(date_arr) = inner.as_any().downcast_ref::<arrow_array::Date64Array>() {
+            let result: arrow_array::Date64Array = date_arr.iter()
+                .map(|opt| {
+                    opt.map(|ms| {
+                        let days = (ms / 86_400_000) as i32;
+                        let new_days = add_business_days_impl(days, days_to_add);
+                        (new_days as i64) * 86_400_000
+                    })
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected date array".to_string()))
+    }
+
+    fn business_days_between(
+        start: arrays::ArrayBorrow<'_>,
+        end: arrays::ArrayBorrow<'_>
+    ) -> Result<arrays::Array, compute::ArrowError> {
+        let start_inner = &start.get::<ArrayImpl>().inner;
+        let end_inner = &end.get::<ArrayImpl>().inner;
+
+        let start_days = extract_days_from_date_array(start_inner)?;
+        let end_days = extract_days_from_date_array(end_inner)?;
+
+        let result: arrow_array::Int32Array = start_days.iter().zip(end_days.iter())
+            .map(|(s, e)| {
+                match (s, e) {
+                    (Some(start_d), Some(end_d)) => Some(count_business_days(*start_d, *end_d)),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 19.5: URL/Encoding Operations
+    // ========================================================================
+
+    fn url_encode(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let result: arrow_array::StringArray = strings.iter()
+            .map(|opt| {
+                opt.as_ref().map(|s| percent_encode_string(s))
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn url_decode(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let result: arrow_array::StringArray = strings.iter()
+            .map(|opt| {
+                opt.as_ref().map(|s| percent_decode_string(s))
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn html_encode(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let result: arrow_array::StringArray = strings.iter()
+            .map(|opt| {
+                opt.as_ref().map(|s| html_escape_string(s))
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn html_decode(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let result: arrow_array::StringArray = strings.iter()
+            .map(|opt| {
+                opt.as_ref().map(|s| html_unescape_string(s))
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn regex_escape(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let result: arrow_array::StringArray = strings.iter()
+            .map(|opt| {
+                opt.as_ref().map(|s| escape_regex_chars(s))
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn sql_quote(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let result: arrow_array::StringArray = strings.iter()
+            .map(|opt| {
+                opt.as_ref().map(|s| format!("'{}'", s.replace('\'', "''")))
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 19.7: Array Element Statistics
+    // ========================================================================
+
+    fn list_sum(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(list_arr) = inner.as_any().downcast_ref::<arrow_array::ListArray>() {
+            let result: arrow_array::Float64Array = (0..list_arr.len())
+                .map(|i| {
+                    if list_arr.is_null(i) {
+                        None
+                    } else {
+                        let values = list_arr.value(i);
+                        let sum = aggregate_list_values(&values, "sum");
+                        sum
+                    }
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected list array".to_string()))
+    }
+
+    fn list_mean(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(list_arr) = inner.as_any().downcast_ref::<arrow_array::ListArray>() {
+            let result: arrow_array::Float64Array = (0..list_arr.len())
+                .map(|i| {
+                    if list_arr.is_null(i) {
+                        None
+                    } else {
+                        let values = list_arr.value(i);
+                        aggregate_list_values(&values, "mean")
+                    }
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected list array".to_string()))
+    }
+
+    fn list_min(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(list_arr) = inner.as_any().downcast_ref::<arrow_array::ListArray>() {
+            let result: arrow_array::Float64Array = (0..list_arr.len())
+                .map(|i| {
+                    if list_arr.is_null(i) {
+                        None
+                    } else {
+                        let values = list_arr.value(i);
+                        aggregate_list_values(&values, "min")
+                    }
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected list array".to_string()))
+    }
+
+    fn list_max(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(list_arr) = inner.as_any().downcast_ref::<arrow_array::ListArray>() {
+            let result: arrow_array::Float64Array = (0..list_arr.len())
+                .map(|i| {
+                    if list_arr.is_null(i) {
+                        None
+                    } else {
+                        let values = list_arr.value(i);
+                        aggregate_list_values(&values, "max")
+                    }
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected list array".to_string()))
+    }
+
+    fn list_length(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(list_arr) = inner.as_any().downcast_ref::<arrow_array::ListArray>() {
+            let result: arrow_array::Int64Array = (0..list_arr.len())
+                .map(|i| {
+                    if list_arr.is_null(i) {
+                        None
+                    } else {
+                        Some(list_arr.value(i).len() as i64)
+                    }
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected list array".to_string()))
+    }
+
+    fn list_contains(arr: arrays::ArrayBorrow<'_>, value: String) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(list_arr) = inner.as_any().downcast_ref::<arrow_array::ListArray>() {
+            let result: arrow_array::BooleanArray = (0..list_arr.len())
+                .map(|i| {
+                    if list_arr.is_null(i) {
+                        None
+                    } else {
+                        let values = list_arr.value(i);
+                        Some(list_contains_value(&values, &value))
+                    }
+                })
+                .collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected list array".to_string()))
+    }
+
+    fn list_first(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(list_arr) = inner.as_any().downcast_ref::<arrow_array::ListArray>() {
+            // Determine element type from first non-empty list
+            let mut elem_type = None;
+            for i in 0..list_arr.len() {
+                if !list_arr.is_null(i) {
+                    let values = list_arr.value(i);
+                    if values.len() > 0 {
+                        elem_type = Some(values.data_type().clone());
+                        break;
+                    }
+                }
+            }
+
+            return extract_list_element(list_arr, 0, elem_type);
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected list array".to_string()))
+    }
+
+    fn list_last(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+
+        if let Some(list_arr) = inner.as_any().downcast_ref::<arrow_array::ListArray>() {
+            let mut elem_type = None;
+            for i in 0..list_arr.len() {
+                if !list_arr.is_null(i) {
+                    let values = list_arr.value(i);
+                    if values.len() > 0 {
+                        elem_type = Some(values.data_type().clone());
+                        break;
+                    }
+                }
+            }
+
+            return extract_list_element_last(list_arr, elem_type);
+        }
+
+        Err(compute::ArrowError::InvalidArgument("Expected list array".to_string()))
     }
 }
 

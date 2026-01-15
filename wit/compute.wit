@@ -2226,4 +2226,124 @@ interface compute {
 
     /// Clip array values to min/max range
     clip: func(arr: borrow<array>, min: option<f64>, max: option<f64>) -> result<array, arrow-error>;
+
+    /// ========== Date/Time Formatting (Phase 19.1) ==========
+
+    /// Format timestamp to string with format pattern (strftime-style)
+    timestamp-format: func(arr: borrow<array>, format: string) -> result<array, arrow-error>;
+
+    /// Format date to string with format pattern
+    date-format: func(arr: borrow<array>, format: string) -> result<array, arrow-error>;
+
+    /// Parse string to timestamp with format pattern
+    timestamp-parse: func(arr: borrow<array>, format: string) -> result<array, arrow-error>;
+
+    /// Parse string to date with format pattern
+    date-parse: func(arr: borrow<array>, format: string) -> result<array, arrow-error>;
+
+    /// Get timestamp component (year, month, day, hour, minute, second)
+    timestamp-component: func(arr: borrow<array>, component: string) -> result<array, arrow-error>;
+
+    /// ========== Conditional/Case Operations (Phase 19.2) ==========
+
+    /// Case-when with condition array and two result arrays
+    case-when: func(condition: borrow<array>, then-val: borrow<array>, else-val: borrow<array>) -> result<array, arrow-error>;
+
+    /// Decode - map values to results (like SQL DECODE)
+    decode: func(arr: borrow<array>, search-values: list<string>, result-values: list<string>, default-value: option<string>) -> result<array, arrow-error>;
+
+    /// ========== String Formatting (Phase 19.3) ==========
+
+    /// Format number to string with decimal places
+    format-number: func(arr: borrow<array>, decimal-places: u32) -> result<array, arrow-error>;
+
+    /// Format number with thousand separators
+    format-number-grouped: func(arr: borrow<array>, decimal-places: u32, group-sep: string, decimal-sep: string) -> result<array, arrow-error>;
+
+    /// Format number as currency
+    format-currency: func(arr: borrow<array>, symbol: string, decimal-places: u32) -> result<array, arrow-error>;
+
+    /// Format number as percentage
+    format-percent: func(arr: borrow<array>, decimal-places: u32) -> result<array, arrow-error>;
+
+    /// Pad string left to width
+    lpad: func(arr: borrow<array>, width: u32, pad-char: string) -> result<array, arrow-error>;
+
+    /// Pad string right to width
+    rpad: func(arr: borrow<array>, width: u32, pad-char: string) -> result<array, arrow-error>;
+
+    /// ========== Calendar Operations (Phase 19.4) ==========
+
+    /// Check if date is weekend
+    is-weekend: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if date is weekday
+    is-weekday: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get day of week (0=Sunday, 6=Saturday)
+    day-of-week: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get day of year (1-366)
+    day-of-year: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get week of year (ISO week number)
+    week-of-year: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get quarter (1-4)
+    quarter: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if year is leap year
+    is-leap-year: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Add business days (skip weekends)
+    add-business-days: func(arr: borrow<array>, days: s32) -> result<array, arrow-error>;
+
+    /// Count business days between dates
+    business-days-between: func(start-dates: borrow<array>, end-dates: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== URL/Encoding Operations (Phase 19.5) ==========
+
+    /// URL encode string (percent encoding)
+    url-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// URL decode string
+    url-decode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// HTML entity encode
+    html-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// HTML entity decode
+    html-decode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Escape special regex characters
+    regex-escape: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Quote string for SQL (escape single quotes)
+    sql-quote: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Array Element Statistics (Phase 19.7) ==========
+
+    /// Sum of elements in each list
+    list-sum: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Mean of elements in each list
+    list-mean: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Min of elements in each list
+    list-min: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Max of elements in each list
+    list-max: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Length of each list
+    list-length: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check if list contains value
+    list-contains: func(arr: borrow<array>, value: string) -> result<array, arrow-error>;
+
+    /// Get first element of each list
+    list-first: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get last element of each list
+    list-last: func(arr: borrow<array>) -> result<array, arrow-error>;
 }
