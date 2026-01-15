@@ -8704,6 +8704,30 @@ fn strip_accents(s: &str) -> String {
 }
 
 // ============================================================================
+// Phase 21 Helper Functions (RNG)
+// ============================================================================
+
+/// Simple LCG random number generator state
+fn create_rng(seed: Option<u64>) -> u64 {
+    seed.unwrap_or(12345678901234567890)
+}
+
+/// LCG step function
+fn lcg_next(state: &mut u64) -> u64 {
+    // LCG parameters from Numerical Recipes
+    const A: u64 = 6364136223846793005;
+    const C: u64 = 1442695040888963407;
+    *state = state.wrapping_mul(A).wrapping_add(C);
+    *state
+}
+
+/// Generate uniform f64 in [0, 1)
+fn lcg_f64(state: &mut u64) -> f64 {
+    let val = lcg_next(state);
+    (val as f64) / (u64::MAX as f64)
+}
+
+// ============================================================================
 // Compute implementation (stub - to be expanded)
 // ============================================================================
 
@@ -25037,6 +25061,1154 @@ impl compute::Guest for Component {
             .collect();
 
         Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 21.1: One-Hot Encoding & Categorical Operations
+    // ========================================================================
+
+    fn one_hot_encode(arr: arrays::ArrayBorrow<'_>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        // Get unique values
+        let mut unique_values: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for opt in &strings {
+            if let Some(s) = opt {
+                if !seen.contains(s) {
+                    seen.insert(s.clone());
+                    unique_values.push(s.clone());
+                }
+            }
+        }
+        unique_values.sort();
+
+        // Create boolean columns
+        let mut columns: Vec<Arc<dyn arrow_array::Array>> = Vec::new();
+        let mut fields: Vec<arrow_schema::Field> = Vec::new();
+
+        for val in &unique_values {
+            let col: arrow_array::BooleanArray = strings.iter()
+                .map(|opt| opt.as_ref().map(|s| s == val))
+                .collect();
+            columns.push(Arc::new(col));
+            fields.push(arrow_schema::Field::new(val.clone(), arrow_schema::DataType::Boolean, true));
+        }
+
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+        let batch = arrow_array::RecordBatch::try_new(schema, columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: batch }))
+    }
+
+    fn label_encode(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        // Build mapping in order of first appearance
+        let mut mapping: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        let mut next_label = 0i64;
+
+        let result: arrow_array::Int64Array = strings.iter()
+            .map(|opt| {
+                opt.as_ref().map(|s| {
+                    if let Some(&label) = mapping.get(s) {
+                        label
+                    } else {
+                        let label = next_label;
+                        mapping.insert(s.clone(), label);
+                        next_label += 1;
+                        label
+                    }
+                })
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn label_encode_mapping(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        // Get unique values in order of first appearance
+        let mut unique_values: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for opt in &strings {
+            if let Some(s) = opt {
+                if !seen.contains(s) {
+                    seen.insert(s.clone());
+                    unique_values.push(s.clone());
+                }
+            }
+        }
+
+        let result: arrow_array::StringArray = unique_values.into_iter().map(Some).collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn label_encode_with_mapping(arr: arrays::ArrayBorrow<'_>, mapping: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+        let mapping_inner = &mapping.get::<ArrayImpl>().inner;
+        let mapping_strings = extract_string_values(mapping_inner)?;
+
+        // Build lookup from mapping
+        let lookup: std::collections::HashMap<String, i64> = mapping_strings.iter()
+            .enumerate()
+            .filter_map(|(i, opt)| opt.as_ref().map(|s| (s.clone(), i as i64)))
+            .collect();
+
+        let result: arrow_array::Int64Array = strings.iter()
+            .map(|opt| {
+                opt.as_ref().and_then(|s| lookup.get(s).copied())
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn label_decode(arr: arrays::ArrayBorrow<'_>, mapping: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let mapping_inner = &mapping.get::<ArrayImpl>().inner;
+        let mapping_strings = extract_string_values(mapping_inner)?;
+
+        let mapping_vec: Vec<Option<String>> = mapping_strings;
+
+        let result: arrow_array::StringArray = match inner.data_type() {
+            arrow_schema::DataType::Int64 => {
+                let int_arr = inner.as_any().downcast_ref::<arrow_array::Int64Array>()
+                    .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected Int64 array".to_string()))?;
+                int_arr.iter()
+                    .map(|opt| {
+                        opt.and_then(|idx| {
+                            if idx >= 0 && (idx as usize) < mapping_vec.len() {
+                                mapping_vec[idx as usize].clone()
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect()
+            }
+            _ => return Err(compute::ArrowError::InvalidArgument("Expected integer array".to_string())),
+        };
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn ordinal_encode(arr: arrays::ArrayBorrow<'_>, order: Vec<String>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        let lookup: std::collections::HashMap<String, i64> = order.iter()
+            .enumerate()
+            .map(|(i, s)| (s.clone(), i as i64))
+            .collect();
+
+        let result: arrow_array::Int64Array = strings.iter()
+            .map(|opt| {
+                opt.as_ref().and_then(|s| lookup.get(s).copied())
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn count_encode(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+
+        // Count frequencies
+        let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        for opt in &strings {
+            if let Some(s) = opt {
+                *counts.entry(s.clone()).or_insert(0) += 1;
+            }
+        }
+
+        let result: arrow_array::Int64Array = strings.iter()
+            .map(|opt| {
+                opt.as_ref().and_then(|s| counts.get(s).copied())
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn target_encode(arr: arrays::ArrayBorrow<'_>, target: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let strings = extract_string_values(inner)?;
+        let target_values = collect_nullable_f64_values(&target.get::<ArrayImpl>().inner)?;
+
+        if strings.len() != target_values.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        // Calculate mean target for each category
+        let mut sums: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+        for (s_opt, t_opt) in strings.iter().zip(target_values.iter()) {
+            if let (Some(s), Some(t)) = (s_opt, t_opt) {
+                *sums.entry(s.clone()).or_insert(0.0) += t;
+                *counts.entry(s.clone()).or_insert(0) += 1;
+            }
+        }
+
+        let means: std::collections::HashMap<String, f64> = sums.iter()
+            .map(|(k, v)| (k.clone(), v / *counts.get(k).unwrap() as f64))
+            .collect();
+
+        let result: arrow_array::Float64Array = strings.iter()
+            .map(|opt| {
+                opt.as_ref().and_then(|s| means.get(s).copied())
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // Phase 21.2: Statistical Tests - Already implemented in Phase 18
+    // See: t_test_one_sample, t_test_two_sample, t_test_paired,
+    //      chi_square_test, mann_whitney_test
+
+    // ========================================================================
+    // Phase 21.3: Random Data Generation
+    // ========================================================================
+
+    fn random_uniform(n: u64, seed: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        let mut rng = create_rng(seed);
+        let result: arrow_array::Float64Array = (0..n)
+            .map(|_| Some(lcg_f64(&mut rng)))
+            .collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn random_uniform_range(n: u64, low: f64, high: f64, seed: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        let mut rng = create_rng(seed);
+        let range = high - low;
+        let result: arrow_array::Float64Array = (0..n)
+            .map(|_| Some(low + lcg_f64(&mut rng) * range))
+            .collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn random_integers(n: u64, low: i64, high: i64, seed: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        if high < low {
+            return Err(compute::ArrowError::InvalidArgument("high must be >= low".to_string()));
+        }
+        let mut rng = create_rng(seed);
+        let range = (high - low + 1) as u64;
+        let result: arrow_array::Int64Array = (0..n)
+            .map(|_| Some(low + (lcg_next(&mut rng) % range) as i64))
+            .collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn random_normal(n: u64, mean: f64, stddev: f64, seed: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        let mut rng = create_rng(seed);
+        let result: arrow_array::Float64Array = (0..n)
+            .map(|_| {
+                // Box-Muller transform
+                let u1 = lcg_f64(&mut rng).max(f64::EPSILON);
+                let u2 = lcg_f64(&mut rng);
+                let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+                Some(mean + stddev * z)
+            })
+            .collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn random_exponential(n: u64, lambda: f64, seed: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        if lambda <= 0.0 {
+            return Err(compute::ArrowError::InvalidArgument("lambda must be positive".to_string()));
+        }
+        let mut rng = create_rng(seed);
+        let result: arrow_array::Float64Array = (0..n)
+            .map(|_| {
+                let u = lcg_f64(&mut rng).max(f64::EPSILON);
+                Some(-u.ln() / lambda)
+            })
+            .collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn random_choice(arr: arrays::ArrayBorrow<'_>, n: u64, seed: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        if values.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("Array is empty".to_string()));
+        }
+
+        let mut rng = create_rng(seed);
+        let len = values.len() as u64;
+        let result: arrow_array::Float64Array = (0..n)
+            .map(|_| {
+                let idx = (lcg_next(&mut rng) % len) as usize;
+                values[idx]
+            })
+            .collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn random_choice_no_replace(arr: arrays::ArrayBorrow<'_>, n: u64, seed: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        if (n as usize) > values.len() {
+            return Err(compute::ArrowError::InvalidArgument("n cannot exceed array length".to_string()));
+        }
+
+        let mut rng = create_rng(seed);
+        let mut indices: Vec<usize> = (0..values.len()).collect();
+
+        // Fisher-Yates shuffle for first n elements
+        for i in 0..(n as usize) {
+            let j = i + (lcg_next(&mut rng) % (values.len() - i) as u64) as usize;
+            indices.swap(i, j);
+        }
+
+        let result: arrow_array::Float64Array = indices[..(n as usize)].iter()
+            .map(|&idx| values[idx])
+            .collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn random_permutation(n: u64, seed: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        let mut rng = create_rng(seed);
+        let mut indices: Vec<i64> = (0..n as i64).collect();
+
+        // Fisher-Yates shuffle
+        for i in (1..n as usize).rev() {
+            let j = (lcg_next(&mut rng) % (i as u64 + 1)) as usize;
+            indices.swap(i, j);
+        }
+
+        let result: arrow_array::Int64Array = indices.into_iter().map(Some).collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn random_boolean(n: u64, probability: f64, seed: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        if !(0.0..=1.0).contains(&probability) {
+            return Err(compute::ArrowError::InvalidArgument("probability must be between 0 and 1".to_string()));
+        }
+        let mut rng = create_rng(seed);
+        let result: arrow_array::BooleanArray = (0..n)
+            .map(|_| Some(lcg_f64(&mut rng) < probability))
+            .collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 21.4: Cumulative & Scan Operations
+    // ========================================================================
+
+    fn cumulative_any(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let bool_arr = inner.as_any().downcast_ref::<arrow_array::BooleanArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected boolean array".to_string()))?;
+
+        let mut any_true = false;
+        let result: arrow_array::BooleanArray = bool_arr.iter()
+            .map(|opt| {
+                if let Some(v) = opt {
+                    any_true = any_true || v;
+                }
+                Some(any_true)
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn cumulative_all(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let bool_arr = inner.as_any().downcast_ref::<arrow_array::BooleanArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected boolean array".to_string()))?;
+
+        let mut all_true = true;
+        let result: arrow_array::BooleanArray = bool_arr.iter()
+            .map(|opt| {
+                if let Some(v) = opt {
+                    all_true = all_true && v;
+                }
+                Some(all_true)
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // cumulative_count already implemented in Phase 16
+
+    fn cumulative_distinct_count(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let result: arrow_array::Int64Array = values.iter()
+            .map(|opt| {
+                if let Some(v) = opt {
+                    seen.insert(v.to_bits());
+                }
+                Some(seen.len() as i64)
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn first_occurrence(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let result: arrow_array::Int64Array = values.iter()
+            .map(|opt| {
+                if let Some(v) = opt {
+                    let bits = v.to_bits();
+                    if !seen.contains(&bits) {
+                        seen.insert(bits);
+                        Some(1)
+                    } else {
+                        Some(0)
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn running_rank(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let mut seen: Vec<f64> = Vec::new();
+        let result: arrow_array::Int64Array = values.iter()
+            .map(|opt| {
+                if let Some(v) = opt {
+                    seen.push(*v);
+                    let mut sorted = seen.clone();
+                    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    let rank = sorted.iter().position(|x| (*x - *v).abs() < f64::EPSILON).unwrap_or(0) + 1;
+                    Some(rank as i64)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn running_percent_rank(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let mut seen: Vec<f64> = Vec::new();
+        let result: arrow_array::Float64Array = values.iter()
+            .map(|opt| {
+                if let Some(v) = opt {
+                    seen.push(*v);
+                    if seen.len() == 1 {
+                        return Some(0.0);
+                    }
+                    let less_than = seen.iter().filter(|x| **x < *v).count();
+                    Some(less_than as f64 / (seen.len() - 1) as f64)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 21.5: Array Reduction & Aggregation
+    // ========================================================================
+
+    fn product(arr: arrays::ArrayBorrow<'_>) -> Result<Option<f64>, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let nums: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+
+        if nums.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(nums.iter().product()))
+    }
+
+    fn argmin(arr: arrays::ArrayBorrow<'_>) -> Result<Option<u64>, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let mut min_val: Option<f64> = None;
+        let mut min_idx: Option<u64> = None;
+
+        for (i, opt) in values.iter().enumerate() {
+            if let Some(v) = opt {
+                if min_val.is_none() || *v < min_val.unwrap() {
+                    min_val = Some(*v);
+                    min_idx = Some(i as u64);
+                }
+            }
+        }
+
+        Ok(min_idx)
+    }
+
+    fn argmax(arr: arrays::ArrayBorrow<'_>) -> Result<Option<u64>, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let mut max_val: Option<f64> = None;
+        let mut max_idx: Option<u64> = None;
+
+        for (i, opt) in values.iter().enumerate() {
+            if let Some(v) = opt {
+                if max_val.is_none() || *v > max_val.unwrap() {
+                    max_val = Some(*v);
+                    max_idx = Some(i as u64);
+                }
+            }
+        }
+
+        Ok(max_idx)
+    }
+
+    fn first_non_null(arr: arrays::ArrayBorrow<'_>) -> Result<Option<f64>, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        for opt in values {
+            if let Some(v) = opt {
+                return Ok(Some(v));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn last_non_null(arr: arrays::ArrayBorrow<'_>) -> Result<Option<f64>, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        for opt in values.into_iter().rev() {
+            if let Some(v) = opt {
+                return Ok(Some(v));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn max_consecutive_true(arr: arrays::ArrayBorrow<'_>) -> Result<u64, compute::ArrowError> {
+        let inner = &arr.get::<ArrayImpl>().inner;
+        let bool_arr = inner.as_any().downcast_ref::<arrow_array::BooleanArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected boolean array".to_string()))?;
+
+        let mut max_streak = 0u64;
+        let mut current_streak = 0u64;
+
+        for opt in bool_arr.iter() {
+            match opt {
+                Some(true) => {
+                    current_streak += 1;
+                    max_streak = max_streak.max(current_streak);
+                }
+                _ => {
+                    current_streak = 0;
+                }
+            }
+        }
+
+        Ok(max_streak)
+    }
+
+    fn max_run_length(arr: arrays::ArrayBorrow<'_>) -> Result<u64, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        if values.is_empty() {
+            return Ok(0);
+        }
+
+        let mut max_run = 1u64;
+        let mut current_run = 1u64;
+        let mut prev: Option<u64> = None;
+
+        for opt in &values {
+            if let Some(v) = opt {
+                let bits = v.to_bits();
+                if prev == Some(bits) {
+                    current_run += 1;
+                    max_run = max_run.max(current_run);
+                } else {
+                    current_run = 1;
+                    prev = Some(bits);
+                }
+            }
+        }
+
+        Ok(max_run)
+    }
+
+    // ========================================================================
+    // Phase 21.6: Signal Processing Basics
+    // ========================================================================
+
+    fn convolve(arr: arrays::ArrayBorrow<'_>, kernel: Vec<f64>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let nums: Vec<f64> = values.iter().map(|v| v.unwrap_or(0.0)).collect();
+
+        if kernel.is_empty() || nums.len() < kernel.len() {
+            let result: arrow_array::Float64Array = Vec::<Option<f64>>::new().into_iter().collect();
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }));
+        }
+
+        let result_len = nums.len() - kernel.len() + 1;
+        let result: arrow_array::Float64Array = (0..result_len)
+            .map(|i| {
+                let sum: f64 = kernel.iter().enumerate()
+                    .map(|(j, k)| k * nums[i + j])
+                    .sum();
+                Some(sum)
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn moving_median(arr: arrays::ArrayBorrow<'_>, window: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let window = window as usize;
+
+        if window == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Window size must be positive".to_string()));
+        }
+
+        let result: arrow_array::Float64Array = values.iter()
+            .enumerate()
+            .map(|(i, _)| {
+                if i + 1 < window {
+                    return None;
+                }
+                let mut window_vals: Vec<f64> = values[i + 1 - window..=i]
+                    .iter()
+                    .filter_map(|v| *v)
+                    .collect();
+                if window_vals.is_empty() {
+                    return None;
+                }
+                window_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let mid = window_vals.len() / 2;
+                if window_vals.len() % 2 == 0 {
+                    Some((window_vals[mid - 1] + window_vals[mid]) / 2.0)
+                } else {
+                    Some(window_vals[mid])
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn savgol_filter(arr: arrays::ArrayBorrow<'_>, window: u32, polynomial_order: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let nums: Vec<f64> = values.iter().map(|v| v.unwrap_or(0.0)).collect();
+        let window = window as usize;
+        let _order = polynomial_order as usize;
+
+        if window < 3 || window % 2 == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Window must be odd and >= 3".to_string()));
+        }
+
+        // Simplified: use moving average as approximation
+        let half = window / 2;
+        let result: arrow_array::Float64Array = nums.iter()
+            .enumerate()
+            .map(|(i, _)| {
+                let start = i.saturating_sub(half);
+                let end = (i + half + 1).min(nums.len());
+                let sum: f64 = nums[start..end].iter().sum();
+                let count = (end - start) as f64;
+                Some(sum / count)
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn find_peaks(arr: arrays::ArrayBorrow<'_>, min_height: Option<f64>, min_distance: Option<u32>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let nums: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+        let min_dist = min_distance.unwrap_or(1) as usize;
+
+        let mut peaks: Vec<i64> = Vec::new();
+
+        for i in 1..nums.len().saturating_sub(1) {
+            if nums[i] > nums[i - 1] && nums[i] > nums[i + 1] {
+                // Check min_height
+                if let Some(h) = min_height {
+                    if nums[i] < h {
+                        continue;
+                    }
+                }
+                // Check min_distance from last peak
+                if let Some(&last) = peaks.last() {
+                    if (i as i64 - last) < min_dist as i64 {
+                        continue;
+                    }
+                }
+                peaks.push(i as i64);
+            }
+        }
+
+        let result: arrow_array::Int64Array = peaks.into_iter().map(Some).collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn find_valleys(arr: arrays::ArrayBorrow<'_>, max_height: Option<f64>, min_distance: Option<u32>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+        let nums: Vec<f64> = values.iter().filter_map(|v| *v).collect();
+        let min_dist = min_distance.unwrap_or(1) as usize;
+
+        let mut valleys: Vec<i64> = Vec::new();
+
+        for i in 1..nums.len().saturating_sub(1) {
+            if nums[i] < nums[i - 1] && nums[i] < nums[i + 1] {
+                // Check max_height
+                if let Some(h) = max_height {
+                    if nums[i] > h {
+                        continue;
+                    }
+                }
+                // Check min_distance from last valley
+                if let Some(&last) = valleys.last() {
+                    if (i as i64 - last) < min_dist as i64 {
+                        continue;
+                    }
+                }
+                valleys.push(i as i64);
+            }
+        }
+
+        let result: arrow_array::Int64Array = valleys.into_iter().map(Some).collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn gradient(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::Float64Array = values.iter()
+            .enumerate()
+            .map(|(i, _)| {
+                if i == 0 {
+                    // Forward difference for first element
+                    match (&values[0], values.get(1).and_then(|v| *v)) {
+                        (Some(v0), Some(v1)) => Some(v1 - v0),
+                        _ => None,
+                    }
+                } else if i == values.len() - 1 {
+                    // Backward difference for last element
+                    match (&values[i], &values[i - 1]) {
+                        (Some(vi), Some(vim1)) => Some(vi - vim1),
+                        _ => None,
+                    }
+                } else {
+                    // Central difference
+                    match (&values[i - 1], &values[i + 1]) {
+                        (Some(vim1), Some(vip1)) => Some((vip1 - vim1) / 2.0),
+                        _ => None,
+                    }
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn second_derivative(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let result: arrow_array::Float64Array = values.iter()
+            .enumerate()
+            .map(|(i, _)| {
+                if i == 0 || i >= values.len() - 1 {
+                    None
+                } else {
+                    match (&values[i - 1], &values[i], &values[i + 1]) {
+                        (Some(vim1), Some(vi), Some(vip1)) => Some(vip1 - 2.0 * vi + vim1),
+                        _ => None,
+                    }
+                }
+            })
+            .collect();
+
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    fn zero_crossings(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let values = collect_nullable_f64_values(&arr.get::<ArrayImpl>().inner)?;
+
+        let mut crossings: Vec<i64> = Vec::new();
+
+        for i in 1..values.len() {
+            if let (Some(v_prev), Some(v_curr)) = (&values[i - 1], &values[i]) {
+                if (v_prev.signum() != v_curr.signum()) && *v_prev != 0.0 && *v_curr != 0.0 {
+                    crossings.push(i as i64);
+                }
+            }
+        }
+
+        let result: arrow_array::Int64Array = crossings.into_iter().map(Some).collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result) }))
+    }
+
+    // ========================================================================
+    // Phase 21.7: Cross-Tabulation & Contingency
+    // ========================================================================
+
+    fn crosstab(rows: arrays::ArrayBorrow<'_>, cols: arrays::ArrayBorrow<'_>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let row_inner = &rows.get::<ArrayImpl>().inner;
+        let col_inner = &cols.get::<ArrayImpl>().inner;
+
+        let row_strings = extract_string_values(row_inner)?;
+        let col_strings = extract_string_values(col_inner)?;
+
+        if row_strings.len() != col_strings.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        // Get unique values
+        let mut row_values: Vec<String> = row_strings.iter()
+            .filter_map(|v| v.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        row_values.sort();
+
+        let mut col_values: Vec<String> = col_strings.iter()
+            .filter_map(|v| v.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        col_values.sort();
+
+        // Count occurrences
+        let mut counts: std::collections::HashMap<(String, String), i64> = std::collections::HashMap::new();
+        for (r, c) in row_strings.iter().zip(col_strings.iter()) {
+            if let (Some(row), Some(col)) = (r, c) {
+                *counts.entry((row.clone(), col.clone())).or_insert(0) += 1;
+            }
+        }
+
+        // Build result batch
+        let mut fields = vec![arrow_schema::Field::new("row", arrow_schema::DataType::Utf8, false)];
+        for col_val in &col_values {
+            fields.push(arrow_schema::Field::new(col_val.clone(), arrow_schema::DataType::Int64, true));
+        }
+
+        let row_labels: arrow_array::StringArray = row_values.iter().map(|s| Some(s.as_str())).collect();
+        let mut columns: Vec<Arc<dyn arrow_array::Array>> = vec![Arc::new(row_labels)];
+
+        for col_val in &col_values {
+            let col_data: arrow_array::Int64Array = row_values.iter()
+                .map(|row_val| {
+                    counts.get(&(row_val.clone(), col_val.clone())).copied().or(Some(0))
+                })
+                .collect();
+            columns.push(Arc::new(col_data));
+        }
+
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+        let batch = arrow_array::RecordBatch::try_new(schema, columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: batch }))
+    }
+
+    fn crosstab_agg(rows: arrays::ArrayBorrow<'_>, cols: arrays::ArrayBorrow<'_>, values: arrays::ArrayBorrow<'_>, agg: String) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let row_inner = &rows.get::<ArrayImpl>().inner;
+        let col_inner = &cols.get::<ArrayImpl>().inner;
+
+        let row_strings = extract_string_values(row_inner)?;
+        let col_strings = extract_string_values(col_inner)?;
+        let value_nums = collect_nullable_f64_values(&values.get::<ArrayImpl>().inner)?;
+
+        if row_strings.len() != col_strings.len() || row_strings.len() != value_nums.len() {
+            return Err(compute::ArrowError::InvalidArgument("Arrays must have same length".to_string()));
+        }
+
+        // Get unique values
+        let mut row_values: Vec<String> = row_strings.iter()
+            .filter_map(|v| v.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        row_values.sort();
+
+        let mut col_values: Vec<String> = col_strings.iter()
+            .filter_map(|v| v.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        col_values.sort();
+
+        // Collect values by group
+        let mut groups: std::collections::HashMap<(String, String), Vec<f64>> = std::collections::HashMap::new();
+        for ((r, c), v) in row_strings.iter().zip(col_strings.iter()).zip(value_nums.iter()) {
+            if let (Some(row), Some(col), Some(val)) = (r, c, v) {
+                groups.entry((row.clone(), col.clone())).or_insert_with(Vec::new).push(*val);
+            }
+        }
+
+        // Aggregate
+        let agg_fn = |vals: &[f64]| -> Option<f64> {
+            if vals.is_empty() {
+                return None;
+            }
+            Some(match agg.as_str() {
+                "sum" => vals.iter().sum(),
+                "mean" | "avg" => vals.iter().sum::<f64>() / vals.len() as f64,
+                "min" => vals.iter().cloned().fold(f64::INFINITY, f64::min),
+                "max" => vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+                "count" => vals.len() as f64,
+                _ => vals.iter().sum::<f64>() / vals.len() as f64,
+            })
+        };
+
+        // Build result batch
+        let mut fields = vec![arrow_schema::Field::new("row", arrow_schema::DataType::Utf8, false)];
+        for col_val in &col_values {
+            fields.push(arrow_schema::Field::new(col_val.clone(), arrow_schema::DataType::Float64, true));
+        }
+
+        let row_labels: arrow_array::StringArray = row_values.iter().map(|s| Some(s.as_str())).collect();
+        let mut columns: Vec<Arc<dyn arrow_array::Array>> = vec![Arc::new(row_labels)];
+
+        for col_val in &col_values {
+            let col_data: arrow_array::Float64Array = row_values.iter()
+                .map(|row_val| {
+                    groups.get(&(row_val.clone(), col_val.clone()))
+                        .and_then(|vals| agg_fn(vals))
+                })
+                .collect();
+            columns.push(Arc::new(col_data));
+        }
+
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+        let batch = arrow_array::RecordBatch::try_new(schema, columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: batch }))
+    }
+
+    fn normalize_by_row(batch: record_batch::RecordBatchBorrow<'_>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let inner = &batch.get::<RecordBatchImpl>().inner;
+
+        if inner.num_columns() < 2 {
+            return Err(compute::ArrowError::InvalidArgument("Need at least 2 columns".to_string()));
+        }
+
+        let mut new_columns: Vec<Arc<dyn arrow_array::Array>> = vec![inner.column(0).clone()];
+
+        // Calculate row sums
+        let nrows = inner.num_rows();
+        let mut row_sums = vec![0.0; nrows];
+
+        for col_idx in 1..inner.num_columns() {
+            let values = collect_nullable_f64_values(inner.column(col_idx))?;
+            for (i, opt) in values.iter().enumerate() {
+                if let Some(v) = opt {
+                    row_sums[i] += v;
+                }
+            }
+        }
+
+        // Normalize each column
+        for col_idx in 1..inner.num_columns() {
+            let values = collect_nullable_f64_values(inner.column(col_idx))?;
+            let normalized: arrow_array::Float64Array = values.iter()
+                .enumerate()
+                .map(|(i, opt)| {
+                    opt.map(|v| if row_sums[i] != 0.0 { v / row_sums[i] } else { 0.0 })
+                })
+                .collect();
+            new_columns.push(Arc::new(normalized));
+        }
+
+        let mut fields: Vec<arrow_schema::Field> = vec![inner.schema().field(0).clone()];
+        for i in 1..inner.num_columns() {
+            fields.push(arrow_schema::Field::new(
+                inner.schema().field(i).name(),
+                arrow_schema::DataType::Float64,
+                true
+            ));
+        }
+
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+        let result = arrow_array::RecordBatch::try_new(schema, new_columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn normalize_by_column(batch: record_batch::RecordBatchBorrow<'_>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let inner = &batch.get::<RecordBatchImpl>().inner;
+
+        if inner.num_columns() < 2 {
+            return Err(compute::ArrowError::InvalidArgument("Need at least 2 columns".to_string()));
+        }
+
+        let mut new_columns: Vec<Arc<dyn arrow_array::Array>> = vec![inner.column(0).clone()];
+
+        // Normalize each column by its sum
+        for col_idx in 1..inner.num_columns() {
+            let values = collect_nullable_f64_values(inner.column(col_idx))?;
+            let col_sum: f64 = values.iter().filter_map(|v| *v).sum();
+
+            let normalized: arrow_array::Float64Array = values.iter()
+                .map(|opt| {
+                    opt.map(|v| if col_sum != 0.0 { v / col_sum } else { 0.0 })
+                })
+                .collect();
+            new_columns.push(Arc::new(normalized));
+        }
+
+        let mut fields: Vec<arrow_schema::Field> = vec![inner.schema().field(0).clone()];
+        for i in 1..inner.num_columns() {
+            fields.push(arrow_schema::Field::new(
+                inner.schema().field(i).name(),
+                arrow_schema::DataType::Float64,
+                true
+            ));
+        }
+
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+        let result = arrow_array::RecordBatch::try_new(schema, new_columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn normalize_by_total(batch: record_batch::RecordBatchBorrow<'_>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let inner = &batch.get::<RecordBatchImpl>().inner;
+
+        if inner.num_columns() < 2 {
+            return Err(compute::ArrowError::InvalidArgument("Need at least 2 columns".to_string()));
+        }
+
+        // Calculate total sum
+        let mut total_sum = 0.0;
+        for col_idx in 1..inner.num_columns() {
+            let values = collect_nullable_f64_values(inner.column(col_idx))?;
+            total_sum += values.iter().filter_map(|v| *v).sum::<f64>();
+        }
+
+        let mut new_columns: Vec<Arc<dyn arrow_array::Array>> = vec![inner.column(0).clone()];
+
+        // Normalize each column by total
+        for col_idx in 1..inner.num_columns() {
+            let values = collect_nullable_f64_values(inner.column(col_idx))?;
+            let normalized: arrow_array::Float64Array = values.iter()
+                .map(|opt| {
+                    opt.map(|v| if total_sum != 0.0 { v / total_sum } else { 0.0 })
+                })
+                .collect();
+            new_columns.push(Arc::new(normalized));
+        }
+
+        let mut fields: Vec<arrow_schema::Field> = vec![inner.schema().field(0).clone()];
+        for i in 1..inner.num_columns() {
+            fields.push(arrow_schema::Field::new(
+                inner.schema().field(i).name(),
+                arrow_schema::DataType::Float64,
+                true
+            ));
+        }
+
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+        let result = arrow_array::RecordBatch::try_new(schema, new_columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn add_row_totals(batch: record_batch::RecordBatchBorrow<'_>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let inner = &batch.get::<RecordBatchImpl>().inner;
+
+        if inner.num_columns() < 2 {
+            return Err(compute::ArrowError::InvalidArgument("Need at least 2 columns".to_string()));
+        }
+
+        let nrows = inner.num_rows();
+        let mut row_totals = vec![0.0; nrows];
+
+        for col_idx in 1..inner.num_columns() {
+            let values = collect_nullable_f64_values(inner.column(col_idx))?;
+            for (i, opt) in values.iter().enumerate() {
+                if let Some(v) = opt {
+                    row_totals[i] += v;
+                }
+            }
+        }
+
+        let total_col: arrow_array::Float64Array = row_totals.into_iter().map(Some).collect();
+
+        let mut columns: Vec<Arc<dyn arrow_array::Array>> = inner.columns().to_vec();
+        columns.push(Arc::new(total_col));
+
+        let mut fields: Vec<arrow_schema::Field> = inner.schema().fields().iter().map(|f| f.as_ref().clone()).collect();
+        fields.push(arrow_schema::Field::new("total", arrow_schema::DataType::Float64, true));
+
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+        let result = arrow_array::RecordBatch::try_new(schema, columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn add_column_totals(batch: record_batch::RecordBatchBorrow<'_>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let inner = &batch.get::<RecordBatchImpl>().inner;
+
+        if inner.num_columns() < 2 {
+            return Err(compute::ArrowError::InvalidArgument("Need at least 2 columns".to_string()));
+        }
+
+        // Calculate column totals
+        let mut col_totals: Vec<f64> = Vec::new();
+        col_totals.push(0.0); // Placeholder for row label column
+
+        for col_idx in 1..inner.num_columns() {
+            let values = collect_nullable_f64_values(inner.column(col_idx))?;
+            let sum: f64 = values.iter().filter_map(|v| *v).sum();
+            col_totals.push(sum);
+        }
+
+        // Create new row
+        let total_label: arrow_array::StringArray = vec![Some("Total")].into_iter().collect();
+        let mut total_row: Vec<Arc<dyn arrow_array::Array>> = vec![Arc::new(total_label)];
+
+        for &total in &col_totals[1..] {
+            let arr: arrow_array::Float64Array = vec![Some(total)].into_iter().collect();
+            total_row.push(Arc::new(arr));
+        }
+
+        // Build new schema for totals row
+        let mut total_fields = vec![arrow_schema::Field::new("row", arrow_schema::DataType::Utf8, true)];
+        for i in 1..inner.num_columns() {
+            total_fields.push(arrow_schema::Field::new(
+                inner.schema().field(i).name(),
+                arrow_schema::DataType::Float64,
+                true
+            ));
+        }
+
+        let total_schema = Arc::new(arrow_schema::Schema::new(total_fields));
+        let total_batch = arrow_array::RecordBatch::try_new(total_schema, total_row)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        // Concatenate original batch with totals row
+        let concat_result = arrow_select::concat::concat_batches(&total_batch.schema(), &[inner.clone(), total_batch])
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: concat_result }))
     }
 }
 

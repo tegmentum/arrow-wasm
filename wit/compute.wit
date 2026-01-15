@@ -2462,4 +2462,151 @@ interface compute {
 
     /// Remove accents/diacritics from strings
     remove-accents: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== One-Hot Encoding & Categorical Operations (Phase 21.1) ==========
+
+    /// One-hot encode a string/integer array (returns record batch with boolean columns)
+    one-hot-encode: func(arr: borrow<array>) -> result<record-batch, arrow-error>;
+
+    /// Label encode string array to integers (0, 1, 2, ...)
+    label-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Get label encoding mapping (returns string array of unique values in order)
+    label-encode-mapping: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Apply label encoding with existing mapping
+    label-encode-with-mapping: func(arr: borrow<array>, mapping: borrow<array>) -> result<array, arrow-error>;
+
+    /// Inverse label encode (integers back to strings)
+    label-decode: func(arr: borrow<array>, mapping: borrow<array>) -> result<array, arrow-error>;
+
+    /// Ordinal encode with specified order
+    ordinal-encode: func(arr: borrow<array>, order: list<string>) -> result<array, arrow-error>;
+
+    /// Count encode (replace categories with their frequencies)
+    count-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Target encode (replace categories with mean of target variable)
+    target-encode: func(arr: borrow<array>, target: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Random Data Generation (Phase 21.3) ==========
+
+    /// Generate random uniform floats [0, 1)
+    random-uniform: func(n: u64, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// Generate random uniform floats in range [low, high)
+    random-uniform-range: func(n: u64, low: f64, high: f64, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// Generate random integers in range [low, high]
+    random-integers: func(n: u64, low: s64, high: s64, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// Generate random normal (Gaussian) distributed values
+    random-normal: func(n: u64, mean: f64, stddev: f64, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// Generate random exponential distributed values
+    random-exponential: func(n: u64, lambda: f64, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// Generate random choice from array (with replacement)
+    random-choice: func(arr: borrow<array>, n: u64, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// Generate random choice without replacement
+    random-choice-no-replace: func(arr: borrow<array>, n: u64, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// Generate random permutation of indices [0, n)
+    random-permutation: func(n: u64, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// Generate random boolean values with given probability
+    random-boolean: func(n: u64, probability: f64, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// ========== Cumulative & Scan Operations (Phase 21.4) ==========
+
+    /// Cumulative any (logical OR)
+    cumulative-any: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Cumulative all (logical AND)
+    cumulative-all: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Cumulative count of distinct values seen so far
+    cumulative-distinct-count: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// First occurrence (1 for first time value appears, 0 otherwise)
+    first-occurrence: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Running rank (rank at each position in expanding window)
+    running-rank: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Running percentile rank
+    running-percent-rank: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Array Reduction & Aggregation (Phase 21.5) ==========
+
+    /// Product of all elements
+    product: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Index of minimum value
+    argmin: func(arr: borrow<array>) -> result<option<u64>, arrow-error>;
+
+    /// Index of maximum value
+    argmax: func(arr: borrow<array>) -> result<option<u64>, arrow-error>;
+
+    /// First non-null value
+    first-non-null: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Last non-null value
+    last-non-null: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Count consecutive true values (max streak)
+    max-consecutive-true: func(arr: borrow<array>) -> result<u64, arrow-error>;
+
+    /// Count consecutive identical values (max run length)
+    max-run-length: func(arr: borrow<array>) -> result<u64, arrow-error>;
+
+    /// ========== Signal Processing Basics (Phase 21.6) ==========
+
+    /// Convolve array with kernel
+    convolve: func(arr: borrow<array>, kernel: list<f64>) -> result<array, arrow-error>;
+
+    /// Moving median (more robust than moving mean)
+    moving-median: func(arr: borrow<array>, window: u32) -> result<array, arrow-error>;
+
+    /// Savitzky-Golay smoothing filter
+    savgol-filter: func(arr: borrow<array>, window: u32, polynomial-order: u32) -> result<array, arrow-error>;
+
+    /// Detect peaks (local maxima)
+    find-peaks: func(arr: borrow<array>, min-height: option<f64>, min-distance: option<u32>) -> result<array, arrow-error>;
+
+    /// Detect valleys (local minima)
+    find-valleys: func(arr: borrow<array>, max-height: option<f64>, min-distance: option<u32>) -> result<array, arrow-error>;
+
+    /// Compute first derivative (gradient)
+    gradient: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Compute second derivative
+    second-derivative: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Zero-crossing detection
+    zero-crossings: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Cross-Tabulation & Contingency (Phase 21.7) ==========
+
+    /// Create cross-tabulation (contingency table) from two arrays
+    crosstab: func(rows: borrow<array>, cols: borrow<array>) -> result<record-batch, arrow-error>;
+
+    /// Create cross-tabulation with value aggregation
+    crosstab-agg: func(rows: borrow<array>, cols: borrow<array>, values: borrow<array>, agg: string) -> result<record-batch, arrow-error>;
+
+    /// Normalize contingency table by row (row percentages)
+    normalize-by-row: func(batch: borrow<record-batch>) -> result<record-batch, arrow-error>;
+
+    /// Normalize contingency table by column (column percentages)
+    normalize-by-column: func(batch: borrow<record-batch>) -> result<record-batch, arrow-error>;
+
+    /// Normalize contingency table by total (overall percentages)
+    normalize-by-total: func(batch: borrow<record-batch>) -> result<record-batch, arrow-error>;
+
+    /// Add row totals to contingency table
+    add-row-totals: func(batch: borrow<record-batch>) -> result<record-batch, arrow-error>;
+
+    /// Add column totals to contingency table
+    add-column-totals: func(batch: borrow<record-batch>) -> result<record-batch, arrow-error>;
 }
