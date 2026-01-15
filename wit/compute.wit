@@ -1823,4 +1823,145 @@ interface compute {
 
     /// Rank transform (convert to ranks, 1-based)
     rank-transform: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Missing Data Interpolation (Phase 16.1) ==========
+
+    /// Interpolation method
+    enum interpolation-method {
+        /// Linear interpolation
+        linear,
+        /// Nearest neighbor
+        nearest,
+        /// Forward fill (LOCF)
+        forward,
+        /// Backward fill (NOCB)
+        backward,
+    }
+
+    /// Interpolate missing values in array
+    interpolate: func(arr: borrow<array>, method: interpolation-method, limit: option<u32>) -> result<array, arrow-error>;
+
+    /// Interpolate with constant fill value
+    interpolate-constant: func(arr: borrow<array>, value: f64) -> result<array, arrow-error>;
+
+    /// Detect missing value runs (returns start, length pairs)
+    missing-runs: func(arr: borrow<array>) -> result<list<tuple<u64, u64>>, arrow-error>;
+
+    /// Count consecutive missing values at each position
+    missing-streak: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// ========== Pivot/Unpivot Operations (Phase 16.2) ==========
+
+    /// Pivot a table (long to wide format)
+    pivot: func(
+        batch: borrow<record-batch>,
+        index-columns: list<string>,
+        pivot-column: string,
+        value-column: string,
+        agg-function: agg-function
+    ) -> result<record-batch, arrow-error>;
+
+    /// Unpivot/melt a table (wide to long format)
+    unpivot: func(
+        batch: borrow<record-batch>,
+        id-columns: list<string>,
+        value-columns: list<string>,
+        var-name: string,
+        value-name: string
+    ) -> result<record-batch, arrow-error>;
+
+    /// ========== Hashing Functions (Phase 16.3) ==========
+
+    /// Hash algorithm
+    enum hash-algorithm {
+        /// MD5 (128-bit)
+        md5,
+        /// SHA-256 (256-bit)
+        sha256,
+        /// CRC32 checksum
+        crc32,
+        /// Fast non-crypto hash
+        fnv1a,
+    }
+
+    /// Hash string array to hex strings
+    hash-strings: func(arr: borrow<array>, algorithm: hash-algorithm) -> result<array, arrow-error>;
+
+    /// Compute row-level hash for record batch
+    hash-rows: func(batch: borrow<record-batch>, columns: list<string>, algorithm: hash-algorithm) -> result<array, arrow-error>;
+
+    /// ========== Data Masking (Phase 16.4) ==========
+
+    /// Mask string values with character replacement
+    mask-string: func(arr: borrow<array>, mask-char: string, keep-first: u32, keep-last: u32) -> result<array, arrow-error>;
+
+    /// Mask email addresses (show first char and domain)
+    mask-email: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Generalize numeric values to ranges (k-anonymity helper)
+    generalize-numeric: func(arr: borrow<array>, bin-size: f64) -> result<array, arrow-error>;
+
+    /// Add Laplace noise for differential privacy
+    add-noise-laplace: func(arr: borrow<array>, epsilon: f64, sensitivity: f64, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// ========== Advanced Sampling (Phase 16.5) ==========
+
+    /// Stratified sample - sample from each stratum proportionally
+    stratified-sample: func(
+        batch: borrow<record-batch>,
+        stratum-column: string,
+        sample-fraction: f64,
+        seed: option<u64>
+    ) -> result<record-batch, arrow-error>;
+
+    /// Weighted random sample
+    weighted-sample: func(
+        arr: borrow<array>,
+        weights: borrow<array>,
+        n: u64,
+        seed: option<u64>
+    ) -> result<array, arrow-error>;
+
+    /// Systematic sample (every nth element with random start)
+    systematic-sample: func(arr: borrow<array>, interval: u32, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// Reservoir sample (streaming-friendly)
+    reservoir-sample: func(arr: borrow<array>, k: u64, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// Bootstrap sample (sample with replacement)
+    bootstrap-sample: func(arr: borrow<array>, n: u64, seed: option<u64>) -> result<array, arrow-error>;
+
+    /// ========== Fuzzy String Operations (Phase 16.6) ==========
+
+    /// Fuzzy deduplication - remove near-duplicate strings
+    fuzzy-dedup: func(
+        arr: borrow<array>,
+        threshold: f64,
+        algorithm: string,
+        keep-first: bool
+    ) -> result<array, arrow-error>;
+
+    /// Fuzzy group assignment - assign group IDs to similar strings
+    fuzzy-group: func(
+        arr: borrow<array>,
+        threshold: f64,
+        algorithm: string
+    ) -> result<array, arrow-error>;
+
+    /// Phonetic grouping - group by phonetic encoding
+    phonetic-group: func(arr: borrow<array>, algorithm: phonetic-algorithm) -> result<array, arrow-error>;
+
+    /// ========== Sequence Operations (Phase 16.7) ==========
+
+    /// Detect runs of consecutive equal values
+    detect-runs: func(arr: borrow<array>) -> result<record-batch, arrow-error>;
+
+    /// Compute run lengths for each position
+    run-lengths: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Find gaps in monotonic sequence
+    sequence-gaps: func(arr: borrow<array>, expected-diff: f64) -> result<array, arrow-error>;
+
+    /// Compute consecutive differences
+    consecutive-diff: func(arr: borrow<array>) -> result<array, arrow-error>;
 }

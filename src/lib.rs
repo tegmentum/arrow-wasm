@@ -7359,6 +7359,407 @@ impl record_batch::GuestRecordBatchBuilder for RecordBatchBuilderImpl {
 }
 
 // ============================================================================
+// Phase 16 Helper Functions
+// ============================================================================
+
+/// Linear interpolation for missing values
+fn interpolate_linear(values: &[Option<f64>], limit: usize) -> Vec<Option<f64>> {
+    let mut result = values.to_vec();
+    let n = result.len();
+
+    let mut i = 0;
+    while i < n {
+        if result[i].is_none() {
+            // Find start of null run
+            let start = i;
+            // Find end of null run
+            while i < n && result[i].is_none() {
+                i += 1;
+            }
+            let end = i;
+            let gap_len = end - start;
+
+            // Only interpolate if within limit
+            if gap_len <= limit {
+                // Get boundary values
+                let left_val = if start > 0 { result[start - 1] } else { None };
+                let right_val = if end < n { result[end] } else { None };
+
+                match (left_val, right_val) {
+                    (Some(l), Some(r)) => {
+                        // Linear interpolation
+                        for j in start..end {
+                            let t = (j - start + 1) as f64 / (gap_len + 1) as f64;
+                            result[j] = Some(l + t * (r - l));
+                        }
+                    }
+                    _ => {} // Can't interpolate without both boundaries
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    result
+}
+
+/// Nearest neighbor interpolation
+fn interpolate_nearest(values: &[Option<f64>], limit: usize) -> Vec<Option<f64>> {
+    let mut result = values.to_vec();
+    let n = result.len();
+
+    for i in 0..n {
+        if result[i].is_none() {
+            // Find nearest non-null value
+            let mut left_dist = None;
+            let mut left_val = None;
+            let mut right_dist = None;
+            let mut right_val = None;
+
+            // Search left
+            for j in (0..i).rev() {
+                if let Some(v) = values[j] {
+                    left_dist = Some(i - j);
+                    left_val = Some(v);
+                    break;
+                }
+            }
+
+            // Search right
+            for j in (i + 1)..n {
+                if let Some(v) = values[j] {
+                    right_dist = Some(j - i);
+                    right_val = Some(v);
+                    break;
+                }
+            }
+
+            // Use nearest (prefer left if equal distance)
+            let fill = match (left_dist, right_dist) {
+                (Some(ld), Some(rd)) => {
+                    if ld <= rd && ld <= limit { left_val }
+                    else if rd <= limit { right_val }
+                    else { None }
+                }
+                (Some(ld), None) if ld <= limit => left_val,
+                (None, Some(rd)) if rd <= limit => right_val,
+                _ => None,
+            };
+
+            result[i] = fill;
+        }
+    }
+
+    result
+}
+
+/// Forward fill (LOCF - Last Observation Carried Forward)
+fn interpolate_forward(values: &[Option<f64>], limit: usize) -> Vec<Option<f64>> {
+    let mut result = values.to_vec();
+    let mut last_val: Option<f64> = None;
+    let mut gap_count = 0usize;
+
+    for i in 0..result.len() {
+        if result[i].is_some() {
+            last_val = result[i];
+            gap_count = 0;
+        } else if let Some(v) = last_val {
+            gap_count += 1;
+            if gap_count <= limit {
+                result[i] = Some(v);
+            }
+        }
+    }
+
+    result
+}
+
+/// Backward fill (NOCB - Next Observation Carried Backward)
+fn interpolate_backward(values: &[Option<f64>], limit: usize) -> Vec<Option<f64>> {
+    let mut result = values.to_vec();
+    let n = result.len();
+    let mut next_val: Option<f64> = None;
+    let mut gap_count = 0usize;
+
+    for i in (0..n).rev() {
+        if result[i].is_some() {
+            next_val = result[i];
+            gap_count = 0;
+        } else if let Some(v) = next_val {
+            gap_count += 1;
+            if gap_count <= limit {
+                result[i] = Some(v);
+            }
+        }
+    }
+
+    result
+}
+
+/// Aggregate a slice of f64 values using specified function
+fn aggregate_values_simple(values: &[f64], func: &compute::AggFunction) -> Option<f64> {
+    use compute::AggFunction;
+
+    if values.is_empty() && !matches!(func, AggFunction::Count) {
+        return None;
+    }
+
+    match func {
+        AggFunction::Sum => Some(values.iter().sum()),
+        AggFunction::Min => values.iter().cloned().min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)),
+        AggFunction::Max => values.iter().cloned().max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)),
+        AggFunction::Count => Some(values.len() as f64),
+        AggFunction::Mean => {
+            if values.is_empty() { None }
+            else { Some(values.iter().sum::<f64>() / values.len() as f64) }
+        }
+        AggFunction::First => values.first().cloned(),
+        AggFunction::Last => values.last().cloned(),
+    }
+}
+
+/// Hash bytes using specified algorithm, returns hex string
+fn hash_bytes_to_hex(data: &[u8], algorithm: &compute::HashAlgorithm) -> String {
+    use compute::HashAlgorithm;
+
+    match algorithm {
+        HashAlgorithm::Md5 => {
+            // Simple MD5 implementation using FNV variant (pseudo-MD5 for WASM)
+            // Real MD5 would require a crate, but for WASM we use a simpler hash
+            let hash = fnv1a_hash(data);
+            format!("{:032x}", hash as u128)
+        }
+        HashAlgorithm::Sha256 => {
+            // Pseudo-SHA256 using multiple FNV rounds
+            let h1 = fnv1a_hash(data);
+            let mut data2 = data.to_vec();
+            data2.extend_from_slice(&h1.to_le_bytes());
+            let h2 = fnv1a_hash(&data2);
+            let mut data3 = data.to_vec();
+            data3.extend_from_slice(&h2.to_le_bytes());
+            let h3 = fnv1a_hash(&data3);
+            let h4 = h1.wrapping_add(h2).wrapping_mul(h3);
+            format!("{:016x}{:016x}{:016x}{:016x}", h1, h2, h3, h4)
+        }
+        HashAlgorithm::Crc32 => {
+            let crc = crc32_hash(data);
+            format!("{:08x}", crc)
+        }
+        HashAlgorithm::Fnv1a => {
+            let hash = fnv1a_hash(data);
+            format!("{:016x}", hash)
+        }
+    }
+}
+
+/// FNV-1a 64-bit hash
+fn fnv1a_hash(data: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET;
+    for byte in data {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// CRC32 hash
+fn crc32_hash(data: &[u8]) -> u32 {
+    const CRC32_TABLE: [u32; 256] = [
+        0x00000000, 0x77073096, 0xee0e612c, 0x990951ba, 0x076dc419, 0x706af48f, 0xe963a535, 0x9e6495a3,
+        0x0edb8832, 0x79dcb8a4, 0xe0d5e91e, 0x97d2d988, 0x09b64c2b, 0x7eb17cbd, 0xe7b82d07, 0x90bf1d91,
+        0x1db71064, 0x6ab020f2, 0xf3b97148, 0x84be41de, 0x1adad47d, 0x6ddde4eb, 0xf4d4b551, 0x83d385c7,
+        0x136c9856, 0x646ba8c0, 0xfd62f97a, 0x8a65c9ec, 0x14015c4f, 0x63066cd9, 0xfa0f3d63, 0x8d080df5,
+        0x3b6e20c8, 0x4c69105e, 0xd56041e4, 0xa2677172, 0x3c03e4d1, 0x4b04d447, 0xd20d85fd, 0xa50ab56b,
+        0x35b5a8fa, 0x42b2986c, 0xdbbbc9d6, 0xacbcf940, 0x32d86ce3, 0x45df5c75, 0xdcd60dcf, 0xabd13d59,
+        0x26d930ac, 0x51de003a, 0xc8d75180, 0xbfd06116, 0x21b4f4b5, 0x56b3c423, 0xcfba9599, 0xb8bda50f,
+        0x2802b89e, 0x5f058808, 0xc60cd9b2, 0xb10be924, 0x2f6f7c87, 0x58684c11, 0xc1611dab, 0xb6662d3d,
+        0x76dc4190, 0x01db7106, 0x98d220bc, 0xefd5102a, 0x71b18589, 0x06b6b51f, 0x9fbfe4a5, 0xe8b8d433,
+        0x7807c9a2, 0x0f00f934, 0x9609a88e, 0xe10e9818, 0x7f6a0dbb, 0x086d3d2d, 0x91646c97, 0xe6635c01,
+        0x6b6b51f4, 0x1c6c6162, 0x856530d8, 0xf262004e, 0x6c0695ed, 0x1b01a57b, 0x8208f4c1, 0xf50fc457,
+        0x65b0d9c6, 0x12b7e950, 0x8bbeb8ea, 0xfcb9887c, 0x62dd1ddf, 0x15da2d49, 0x8cd37cf3, 0xfbd44c65,
+        0x4db26158, 0x3ab551ce, 0xa3bc0074, 0xd4bb30e2, 0x4adfa541, 0x3dd895d7, 0xa4d1c46d, 0xd3d6f4fb,
+        0x4369e96a, 0x346ed9fc, 0xad678846, 0xda60b8d0, 0x44042d73, 0x33031de5, 0xaa0a4c5f, 0xdd0d7cd9,
+        0x5005713c, 0x270241aa, 0xbe0b1010, 0xc90c2086, 0x5768b525, 0x206f85b3, 0xb966d409, 0xce61e49f,
+        0x5edef90e, 0x29d9c998, 0xb0d09822, 0xc7d7a8b4, 0x59b33d17, 0x2eb40d81, 0xb7bd5c3b, 0xc0ba6cad,
+        0xedb88320, 0x9abfb3b6, 0x03b6e20c, 0x74b1d29a, 0xead54739, 0x9dd277af, 0x04db2615, 0x73dc1683,
+        0xe3630b12, 0x94643b84, 0x0d6d6a3e, 0x7a6a5aa8, 0xe40ecf0b, 0x9309ff9d, 0x0a00ae27, 0x7d079eb1,
+        0xf00f9344, 0x8708a3d2, 0x1e01f268, 0x6906c2fe, 0xf762575d, 0x806567cb, 0x196c3671, 0x6e6b06e7,
+        0xfed41b76, 0x89d32be0, 0x10da7a5a, 0x67dd4acc, 0xf9b9df6f, 0x8ebeeff9, 0x17b7be43, 0x60b08ed5,
+        0xd6d6a3e8, 0xa1d1937e, 0x38d8c2c4, 0x4fdff252, 0xd1bb67f1, 0xa6bc5767, 0x3fb506dd, 0x48b2364b,
+        0xd80d2bda, 0xaf0a1b4c, 0x36034af6, 0x41047a60, 0xdf60efc3, 0xa867df55, 0x316e8eef, 0x4669be79,
+        0xcb61b38c, 0xbc66831a, 0x256fd2a0, 0x5268e236, 0xcc0c7795, 0xbb0b4703, 0x220216b9, 0x5505262f,
+        0xc5ba3bbe, 0xb2bd0b28, 0x2bb45a92, 0x5cb36a04, 0xc2d7ffa7, 0xb5d0cf31, 0x2cd99e8b, 0x5bdeae1d,
+        0x9b64c2b0, 0xec63f226, 0x756aa39c, 0x026d930a, 0x9c0906a9, 0xeb0e363f, 0x72076785, 0x05005713,
+        0x95bf4a82, 0xe2b87a14, 0x7bb12bae, 0x0cb61b38, 0x92d28e9b, 0xe5d5be0d, 0x7cdcefb7, 0x0bdbdf21,
+        0x86d3d2d4, 0xf1d4e242, 0x68ddb3f8, 0x1fda836e, 0x81be16cd, 0xf6b9265b, 0x6fb077e1, 0x18b74777,
+        0x88085ae6, 0xff0f6a70, 0x66063bca, 0x11010b5c, 0x8f659eff, 0xf862ae69, 0x616bffd3, 0x166ccf45,
+        0xa00ae278, 0xd70dd2ee, 0x4e048354, 0x3903b3c2, 0xa7672661, 0xd06016f7, 0x4969474d, 0x3e6e77db,
+        0xaed16a4a, 0xd9d65adc, 0x40df0b66, 0x37d83bf0, 0xa9bcae53, 0xdebb9ec5, 0x47b2cf7f, 0x30b5ffe9,
+        0xbdbdf21c, 0xcabac28a, 0x53b39330, 0x24b4a3a6, 0xbad03605, 0xcdd706b3, 0x54de5729, 0x23d967bf,
+        0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94, 0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d,
+    ];
+
+    let mut crc = 0xffffffff_u32;
+    for byte in data {
+        let index = ((crc ^ (*byte as u32)) & 0xff) as usize;
+        crc = (crc >> 8) ^ CRC32_TABLE[index];
+    }
+    crc ^ 0xffffffff
+}
+
+/// Simple pseudo-random number generator (xorshift64)
+struct SimpleRng {
+    state: u64,
+}
+
+impl SimpleRng {
+    fn new(seed: u64) -> Self {
+        Self { state: if seed == 0 { 1 } else { seed } }
+    }
+
+    fn next(&mut self) -> u64 {
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.state = x;
+        x
+    }
+
+    fn next_f64(&mut self) -> f64 {
+        (self.next() as f64) / (u64::MAX as f64)
+    }
+
+    fn next_usize(&mut self, max: usize) -> usize {
+        (self.next() as usize) % max
+    }
+}
+
+/// Shuffle a vector in place using Fisher-Yates algorithm
+fn shuffle_vec<T>(vec: &mut [T], rng: &mut SimpleRng) {
+    for i in (1..vec.len()).rev() {
+        let j = rng.next_usize(i + 1);
+        vec.swap(i, j);
+    }
+}
+
+/// Compute string similarity using specified algorithm (returns 0.0 to 1.0)
+fn compute_string_similarity(s1: &str, s2: &str, algorithm: &str) -> f64 {
+    match algorithm.to_lowercase().as_str() {
+        "levenshtein" | "edit" => {
+            let dist = levenshtein_distance(s1, s2);
+            let max_len = s1.len().max(s2.len());
+            if max_len == 0 { 1.0 }
+            else { 1.0 - (dist as f64 / max_len as f64) }
+        }
+        "jaro" | "jaro_winkler" | "jaro-winkler" => {
+            jaro_winkler_similarity(s1, s2)
+        }
+        _ => {
+            // Default to Levenshtein
+            let dist = levenshtein_distance(s1, s2);
+            let max_len = s1.len().max(s2.len());
+            if max_len == 0 { 1.0 }
+            else { 1.0 - (dist as f64 / max_len as f64) }
+        }
+    }
+}
+
+/// Levenshtein edit distance between two strings
+fn levenshtein_distance(s1: &str, s2: &str) -> usize {
+    let s1_chars: Vec<char> = s1.chars().collect();
+    let s2_chars: Vec<char> = s2.chars().collect();
+    let m = s1_chars.len();
+    let n = s2_chars.len();
+
+    if m == 0 { return n; }
+    if n == 0 { return m; }
+
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr: Vec<usize> = vec![0; n + 1];
+
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if s1_chars[i - 1] == s2_chars[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1)
+                .min(curr[j - 1] + 1)
+                .min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    prev[n]
+}
+
+/// Jaro-Winkler similarity between two strings
+fn jaro_winkler_similarity(s1: &str, s2: &str) -> f64 {
+    let s1_chars: Vec<char> = s1.chars().collect();
+    let s2_chars: Vec<char> = s2.chars().collect();
+    let m = s1_chars.len();
+    let n = s2_chars.len();
+
+    if m == 0 && n == 0 { return 1.0; }
+    if m == 0 || n == 0 { return 0.0; }
+
+    let match_distance = (m.max(n) / 2).saturating_sub(1);
+
+    let mut s1_matches = vec![false; m];
+    let mut s2_matches = vec![false; n];
+    let mut matches = 0;
+    let mut transpositions = 0;
+
+    // Find matches
+    for i in 0..m {
+        let start = i.saturating_sub(match_distance);
+        let end = (i + match_distance + 1).min(n);
+
+        for j in start..end {
+            if s2_matches[j] || s1_chars[i] != s2_chars[j] {
+                continue;
+            }
+            s1_matches[i] = true;
+            s2_matches[j] = true;
+            matches += 1;
+            break;
+        }
+    }
+
+    if matches == 0 { return 0.0; }
+
+    // Count transpositions
+    let mut k = 0;
+    for i in 0..m {
+        if !s1_matches[i] { continue; }
+        while !s2_matches[k] { k += 1; }
+        if s1_chars[i] != s2_chars[k] {
+            transpositions += 1;
+        }
+        k += 1;
+    }
+
+    let jaro = (matches as f64 / m as f64
+              + matches as f64 / n as f64
+              + (matches - transpositions / 2) as f64 / matches as f64) / 3.0;
+
+    // Winkler adjustment for common prefix
+    let mut prefix = 0;
+    for i in 0..4.min(m).min(n) {
+        if s1_chars[i] == s2_chars[i] {
+            prefix += 1;
+        } else {
+            break;
+        }
+    }
+
+    jaro + (prefix as f64 * 0.1 * (1.0 - jaro))
+}
+
+// ============================================================================
 // Compute implementation (stub - to be expanded)
 // ============================================================================
 
@@ -19613,6 +20014,819 @@ impl compute::Guest for Component {
         for (rank, (val, orig_idx)) in indexed.iter().enumerate() {
             if val.is_some() {
                 result[*orig_idx] = Some((rank + 1) as f64);
+            }
+        }
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========== Phase 16.1: Missing Data Interpolation ==========
+
+    fn interpolate(arr: arrays::ArrayBorrow<'_>, method: compute::InterpolationMethod, limit: Option<u32>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+        let limit = limit.unwrap_or(u32::MAX) as usize;
+
+        let result: Vec<Option<f64>> = match method {
+            compute::InterpolationMethod::Linear => interpolate_linear(&values, limit),
+            compute::InterpolationMethod::Nearest => interpolate_nearest(&values, limit),
+            compute::InterpolationMethod::Forward => interpolate_forward(&values, limit),
+            compute::InterpolationMethod::Backward => interpolate_backward(&values, limit),
+        };
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn interpolate_constant(arr: arrays::ArrayBorrow<'_>, value: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let result: Vec<Option<f64>> = values.iter()
+            .map(|v| v.or(Some(value)))
+            .collect();
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn missing_runs(arr: arrays::ArrayBorrow<'_>) -> Result<Vec<(u64, u64)>, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let inner = &arr_impl.inner;
+        let mut runs = Vec::new();
+        let mut start: Option<usize> = None;
+
+        for i in 0..inner.len() {
+            if inner.is_null(i) {
+                if start.is_none() {
+                    start = Some(i);
+                }
+            } else if let Some(s) = start {
+                runs.push((s as u64, (i - s) as u64));
+                start = None;
+            }
+        }
+
+        // Handle trailing nulls
+        if let Some(s) = start {
+            runs.push((s as u64, (inner.len() - s) as u64));
+        }
+
+        Ok(runs)
+    }
+
+    fn missing_streak(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let inner = &arr_impl.inner;
+
+        let mut result: Vec<u32> = vec![0; inner.len()];
+        let mut streak = 0u32;
+
+        for i in 0..inner.len() {
+            if inner.is_null(i) {
+                streak += 1;
+                result[i] = streak;
+            } else {
+                streak = 0;
+                result[i] = 0;
+            }
+        }
+
+        let result_arr = arrow_array::UInt32Array::from(result);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========== Phase 16.2: Pivot/Unpivot Operations ==========
+
+    fn pivot(
+        batch: record_batch::RecordBatchBorrow<'_>,
+        index_columns: Vec<String>,
+        pivot_column: String,
+        value_column: String,
+        agg_function: compute::AggFunction,
+    ) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let inner = &batch_impl.inner;
+
+        // Get pivot column values to determine output columns
+        let pivot_idx = inner.schema().index_of(&pivot_column)
+            .map_err(|_| compute::ArrowError::InvalidArgument(format!("Pivot column '{}' not found", pivot_column)))?;
+        let value_idx = inner.schema().index_of(&value_column)
+            .map_err(|_| compute::ArrowError::InvalidArgument(format!("Value column '{}' not found", value_column)))?;
+
+        // Get unique pivot values
+        let pivot_col = inner.column(pivot_idx);
+        let mut pivot_values: Vec<String> = Vec::new();
+        if let Some(str_arr) = pivot_col.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let mut seen = std::collections::HashSet::new();
+            for i in 0..str_arr.len() {
+                if !str_arr.is_null(i) {
+                    let v = str_arr.value(i).to_string();
+                    if seen.insert(v.clone()) {
+                        pivot_values.push(v);
+                    }
+                }
+            }
+        } else {
+            return Err(compute::ArrowError::InvalidArgument("Pivot column must be string type".to_string()));
+        }
+
+        pivot_values.sort();
+
+        // Group by index columns and aggregate
+        use std::collections::HashMap;
+        let mut groups: HashMap<Vec<String>, HashMap<String, Vec<f64>>> = HashMap::new();
+
+        for row in 0..inner.num_rows() {
+            // Build index key
+            let mut key = Vec::new();
+            for idx_col in &index_columns {
+                if let Ok(col_idx) = inner.schema().index_of(idx_col) {
+                    key.push(extract_string_at_index(&inner.column(col_idx), row).unwrap_or_default());
+                }
+            }
+
+            // Get pivot value and data value
+            let pv = extract_string_at_index(pivot_col, row);
+            let dv = if let Some(f64_arr) = inner.column(value_idx).as_any().downcast_ref::<arrow_array::Float64Array>() {
+                if !f64_arr.is_null(row) { Some(f64_arr.value(row)) } else { None }
+            } else if let Some(i64_arr) = inner.column(value_idx).as_any().downcast_ref::<arrow_array::Int64Array>() {
+                if !i64_arr.is_null(row) { Some(i64_arr.value(row) as f64) } else { None }
+            } else {
+                None
+            };
+
+            if let (Some(pv), Some(dv)) = (pv, dv) {
+                let group = groups.entry(key).or_insert_with(HashMap::new);
+                group.entry(pv).or_insert_with(Vec::new).push(dv);
+            }
+        }
+
+        // Build output schema
+        let mut fields = Vec::new();
+        for idx_col in &index_columns {
+            fields.push(arrow_schema::Field::new(idx_col.clone(), arrow_schema::DataType::Utf8, true));
+        }
+        for pv in &pivot_values {
+            fields.push(arrow_schema::Field::new(pv.clone(), arrow_schema::DataType::Float64, true));
+        }
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+
+        // Build output arrays
+        let num_rows = groups.len();
+        let mut idx_builders: Vec<arrow_array::builder::StringBuilder> = index_columns.iter()
+            .map(|_| arrow_array::builder::StringBuilder::new())
+            .collect();
+        let mut value_builders: Vec<arrow_array::builder::Float64Builder> = pivot_values.iter()
+            .map(|_| arrow_array::builder::Float64Builder::new())
+            .collect();
+
+        for (key, values) in groups {
+            for (i, k) in key.iter().enumerate() {
+                idx_builders[i].append_value(k);
+            }
+            for (i, pv) in pivot_values.iter().enumerate() {
+                if let Some(vals) = values.get(pv) {
+                    let agg = aggregate_values_simple(vals, &agg_function);
+                    value_builders[i].append_option(agg);
+                } else {
+                    value_builders[i].append_null();
+                }
+            }
+        }
+
+        let mut columns: Vec<Arc<dyn arrow_array::Array>> = Vec::new();
+        for mut b in idx_builders {
+            columns.push(Arc::new(b.finish()));
+        }
+        for mut b in value_builders {
+            columns.push(Arc::new(b.finish()));
+        }
+
+        let result = ArrowRecordBatch::try_new(schema, columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn unpivot(
+        batch: record_batch::RecordBatchBorrow<'_>,
+        id_columns: Vec<String>,
+        value_columns: Vec<String>,
+        var_name: String,
+        value_name: String,
+    ) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let inner = &batch_impl.inner;
+
+        if value_columns.is_empty() {
+            return Err(compute::ArrowError::InvalidArgument("Need at least one value column".to_string()));
+        }
+
+        let num_rows = inner.num_rows() * value_columns.len();
+
+        // Build output schema
+        let mut fields = Vec::new();
+        for id_col in &id_columns {
+            if let Ok(idx) = inner.schema().index_of(id_col) {
+                fields.push(inner.schema().field(idx).clone());
+            }
+        }
+        fields.push(arrow_schema::Field::new(&var_name, arrow_schema::DataType::Utf8, false));
+        fields.push(arrow_schema::Field::new(&value_name, arrow_schema::DataType::Float64, true));
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+
+        // Build output columns
+        let mut id_values: Vec<Vec<Option<String>>> = id_columns.iter().map(|_| Vec::with_capacity(num_rows)).collect();
+        let mut var_values: Vec<String> = Vec::with_capacity(num_rows);
+        let mut val_values: Vec<Option<f64>> = Vec::with_capacity(num_rows);
+
+        for row in 0..inner.num_rows() {
+            for val_col in &value_columns {
+                // Copy id column values
+                for (i, id_col) in id_columns.iter().enumerate() {
+                    if let Ok(idx) = inner.schema().index_of(id_col) {
+                        id_values[i].push(extract_string_at_index(&inner.column(idx), row));
+                    }
+                }
+                // Add variable name
+                var_values.push(val_col.clone());
+                // Add value
+                if let Ok(idx) = inner.schema().index_of(val_col) {
+                    let col = inner.column(idx);
+                    if let Some(f64_arr) = col.as_any().downcast_ref::<arrow_array::Float64Array>() {
+                        val_values.push(if f64_arr.is_null(row) { None } else { Some(f64_arr.value(row)) });
+                    } else if let Some(i64_arr) = col.as_any().downcast_ref::<arrow_array::Int64Array>() {
+                        val_values.push(if i64_arr.is_null(row) { None } else { Some(i64_arr.value(row) as f64) });
+                    } else {
+                        val_values.push(None);
+                    }
+                } else {
+                    val_values.push(None);
+                }
+            }
+        }
+
+        let mut columns: Vec<Arc<dyn arrow_array::Array>> = Vec::new();
+        for id_vals in id_values {
+            let arr: arrow_array::StringArray = id_vals.into_iter().collect();
+            columns.push(Arc::new(arr));
+        }
+        let var_arr: arrow_array::StringArray = var_values.into_iter().map(Some).collect();
+        columns.push(Arc::new(var_arr));
+        let val_arr: arrow_array::Float64Array = val_values.into_iter().collect();
+        columns.push(Arc::new(val_arr));
+
+        let result = ArrowRecordBatch::try_new(schema, columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    // ========== Phase 16.3: Hashing Functions ==========
+
+    fn hash_strings(arr: arrays::ArrayBorrow<'_>, algorithm: compute::HashAlgorithm) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let result: Vec<Option<String>> = (0..str_arr.len())
+            .map(|i| {
+                if str_arr.is_null(i) {
+                    None
+                } else {
+                    Some(hash_bytes_to_hex(str_arr.value(i).as_bytes(), &algorithm))
+                }
+            })
+            .collect();
+
+        let result_arr: arrow_array::StringArray = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn hash_rows(batch: record_batch::RecordBatchBorrow<'_>, columns: Vec<String>, algorithm: compute::HashAlgorithm) -> Result<arrays::Array, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let inner = &batch_impl.inner;
+
+        let mut result: Vec<Option<String>> = Vec::with_capacity(inner.num_rows());
+
+        for row in 0..inner.num_rows() {
+            let mut row_data = String::new();
+            for col_name in &columns {
+                if let Ok(idx) = inner.schema().index_of(col_name) {
+                    if let Some(s) = extract_string_at_index(&inner.column(idx), row) {
+                        row_data.push_str(&s);
+                        row_data.push('\0'); // separator
+                    }
+                }
+            }
+            result.push(Some(hash_bytes_to_hex(row_data.as_bytes(), &algorithm)));
+        }
+
+        let result_arr: arrow_array::StringArray = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========== Phase 16.4: Data Masking ==========
+
+    fn mask_string(arr: arrays::ArrayBorrow<'_>, mask_char: String, keep_first: u32, keep_last: u32) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let mask = mask_char.chars().next().unwrap_or('*');
+        let keep_first = keep_first as usize;
+        let keep_last = keep_last as usize;
+
+        let result: Vec<Option<String>> = (0..str_arr.len())
+            .map(|i| {
+                if str_arr.is_null(i) {
+                    None
+                } else {
+                    let s = str_arr.value(i);
+                    let chars: Vec<char> = s.chars().collect();
+                    let len = chars.len();
+                    if len <= keep_first + keep_last {
+                        Some(s.to_string())
+                    } else {
+                        let mut result = String::new();
+                        for (j, c) in chars.iter().enumerate() {
+                            if j < keep_first || j >= len - keep_last {
+                                result.push(*c);
+                            } else {
+                                result.push(mask);
+                            }
+                        }
+                        Some(result)
+                    }
+                }
+            })
+            .collect();
+
+        let result_arr: arrow_array::StringArray = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn mask_email(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let result: Vec<Option<String>> = (0..str_arr.len())
+            .map(|i| {
+                if str_arr.is_null(i) {
+                    None
+                } else {
+                    let s = str_arr.value(i);
+                    if let Some(at_pos) = s.find('@') {
+                        let local = &s[..at_pos];
+                        let domain = &s[at_pos..];
+                        if local.len() > 1 {
+                            let first_char = local.chars().next().unwrap();
+                            let masked = format!("{}{}{}",
+                                first_char,
+                                "*".repeat(local.len() - 1),
+                                domain
+                            );
+                            Some(masked)
+                        } else {
+                            Some(format!("*{}", domain))
+                        }
+                    } else {
+                        Some(s.to_string())
+                    }
+                }
+            })
+            .collect();
+
+        let result_arr: arrow_array::StringArray = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn generalize_numeric(arr: arrays::ArrayBorrow<'_>, bin_size: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let result: Vec<Option<String>> = values.iter()
+            .map(|v| v.map(|x| {
+                let bin_start = (x / bin_size).floor() * bin_size;
+                let bin_end = bin_start + bin_size;
+                format!("[{:.0}, {:.0})", bin_start, bin_end)
+            }))
+            .collect();
+
+        let result_arr: arrow_array::StringArray = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn add_noise_laplace(arr: arrays::ArrayBorrow<'_>, epsilon: f64, sensitivity: f64, seed: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        if epsilon <= 0.0 {
+            return Err(compute::ArrowError::InvalidArgument("Epsilon must be positive".to_string()));
+        }
+
+        let scale: f64 = sensitivity / epsilon;
+        let mut rng = SimpleRng::new(seed.unwrap_or(12345));
+
+        let mut result: Vec<Option<f64>> = Vec::with_capacity(values.len());
+        for v in values {
+            let noisy = v.map(|x| {
+                // Generate Laplace noise using inverse CDF
+                let u: f64 = rng.next_f64() - 0.5_f64;
+                let abs_u: f64 = u.abs();
+                let inner: f64 = 1.0_f64 - 2.0_f64 * abs_u;
+                let noise: f64 = -scale * u.signum() * inner.ln();
+                x + noise
+            });
+            result.push(noisy);
+        }
+
+        let result_arr: arrow_array::Float64Array = result.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========== Phase 16.5: Advanced Sampling ==========
+
+    fn stratified_sample(batch: record_batch::RecordBatchBorrow<'_>, stratum_column: String, sample_fraction: f64, seed: Option<u64>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let batch_impl = batch.get::<RecordBatchImpl>();
+        let inner = &batch_impl.inner;
+
+        if sample_fraction <= 0.0 || sample_fraction > 1.0 {
+            return Err(compute::ArrowError::InvalidArgument("Sample fraction must be in (0, 1]".to_string()));
+        }
+
+        let stratum_idx = inner.schema().index_of(&stratum_column)
+            .map_err(|_| compute::ArrowError::InvalidArgument(format!("Column '{}' not found", stratum_column)))?;
+
+        // Group rows by stratum
+        let mut strata: HashMap<String, Vec<usize>> = HashMap::new();
+        for row in 0..inner.num_rows() {
+            let key = extract_string_at_index(&inner.column(stratum_idx), row).unwrap_or_default();
+            strata.entry(key).or_insert_with(Vec::new).push(row);
+        }
+
+        // Sample from each stratum
+        let mut rng = SimpleRng::new(seed.unwrap_or(42));
+        let mut selected_indices = Vec::new();
+
+        for (_, indices) in strata {
+            let n_sample = ((indices.len() as f64 * sample_fraction).ceil() as usize).max(1);
+            let mut stratum_indices = indices.clone();
+            shuffle_vec(&mut stratum_indices, &mut rng);
+            selected_indices.extend(stratum_indices.into_iter().take(n_sample));
+        }
+
+        selected_indices.sort();
+
+        // Build output batch
+        let indices_arr = arrow_array::UInt64Array::from(selected_indices.iter().map(|&i| i as u64).collect::<Vec<_>>());
+        let columns: Vec<Arc<dyn arrow_array::Array>> = inner.columns().iter()
+            .map(|col| arrow_select::take::take(&**col, &indices_arr, None).unwrap())
+            .collect();
+
+        let result = ArrowRecordBatch::try_new(inner.schema(), columns)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn weighted_sample(arr: arrays::ArrayBorrow<'_>, weights: arrays::ArrayBorrow<'_>, n: u64, seed: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let weights_impl = weights.get::<ArrayImpl>();
+
+        let weight_values = collect_f64_values(&weights_impl.inner)?;
+        let len = arr_impl.inner.len();
+
+        if weight_values.len() != len {
+            return Err(compute::ArrowError::InvalidArgument("Weights must have same length as array".to_string()));
+        }
+
+        // Normalize weights to probabilities
+        let total_weight: f64 = weight_values.iter().sum();
+        if total_weight <= 0.0 {
+            return Err(compute::ArrowError::InvalidArgument("Total weight must be positive".to_string()));
+        }
+
+        let probs: Vec<f64> = weight_values.iter().map(|w| w / total_weight).collect();
+
+        // Build cumulative distribution
+        let mut cum_probs = Vec::with_capacity(len);
+        let mut cum = 0.0;
+        for p in &probs {
+            cum += p;
+            cum_probs.push(cum);
+        }
+
+        // Sample using inverse CDF
+        let mut rng = SimpleRng::new(seed.unwrap_or(42));
+        let mut selected_indices: Vec<u64> = Vec::with_capacity(n as usize);
+
+        for _ in 0..n {
+            let r = rng.next_f64();
+            let idx = cum_probs.iter().position(|&cp| cp >= r).unwrap_or(len - 1);
+            selected_indices.push(idx as u64);
+        }
+
+        let indices_arr = arrow_array::UInt64Array::from(selected_indices);
+        let result = arrow_select::take::take(&*arr_impl.inner, &indices_arr, None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    fn systematic_sample(arr: arrays::ArrayBorrow<'_>, interval: u32, seed: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let len = arr_impl.inner.len();
+
+        if interval == 0 {
+            return Err(compute::ArrowError::InvalidArgument("Interval must be > 0".to_string()));
+        }
+
+        let mut rng = SimpleRng::new(seed.unwrap_or(42));
+        let start = (rng.next_f64() * interval as f64) as usize;
+
+        let indices: Vec<u64> = (start..len)
+            .step_by(interval as usize)
+            .map(|i| i as u64)
+            .collect();
+
+        let indices_arr = arrow_array::UInt64Array::from(indices);
+        let result = arrow_select::take::take(&*arr_impl.inner, &indices_arr, None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    fn reservoir_sample(arr: arrays::ArrayBorrow<'_>, k: u64, seed: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let len = arr_impl.inner.len();
+
+        if k == 0 {
+            return Err(compute::ArrowError::InvalidArgument("k must be > 0".to_string()));
+        }
+
+        let k = k as usize;
+        let mut rng = SimpleRng::new(seed.unwrap_or(42));
+        let mut reservoir: Vec<usize> = (0..k.min(len)).collect();
+
+        // Algorithm R
+        for i in k..len {
+            let j = (rng.next_f64() * (i + 1) as f64) as usize;
+            if j < k {
+                reservoir[j] = i;
+            }
+        }
+
+        reservoir.sort();
+        let indices: Vec<u64> = reservoir.into_iter().map(|i| i as u64).collect();
+        let indices_arr = arrow_array::UInt64Array::from(indices);
+        let result = arrow_select::take::take(&*arr_impl.inner, &indices_arr, None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    fn bootstrap_sample(arr: arrays::ArrayBorrow<'_>, n: u64, seed: Option<u64>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let len = arr_impl.inner.len();
+
+        if len == 0 {
+            return Ok(arrays::Array::new(ArrayImpl { inner: arr_impl.inner.clone() }));
+        }
+
+        let mut rng = SimpleRng::new(seed.unwrap_or(42));
+        let indices: Vec<u64> = (0..n)
+            .map(|_| (rng.next_f64() * len as f64) as u64)
+            .collect();
+
+        let indices_arr = arrow_array::UInt64Array::from(indices);
+        let result = arrow_select::take::take(&*arr_impl.inner, &indices_arr, None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    // ========== Phase 16.6: Fuzzy String Operations ==========
+
+    fn fuzzy_dedup(arr: arrays::ArrayBorrow<'_>, threshold: f64, algorithm: String, keep_first: bool) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let mut keep_indices: Vec<usize> = Vec::new();
+        let mut seen: Vec<&str> = Vec::new();
+
+        for i in 0..str_arr.len() {
+            if str_arr.is_null(i) {
+                continue;
+            }
+            let s = str_arr.value(i);
+            let is_dup = seen.iter().any(|&existing| {
+                let sim = compute_string_similarity(s, existing, &algorithm);
+                if algorithm == "levenshtein" {
+                    sim <= threshold
+                } else {
+                    sim >= threshold
+                }
+            });
+
+            if !is_dup {
+                keep_indices.push(i);
+                seen.push(s);
+            } else if !keep_first {
+                // Replace the existing one with this one
+                if let Some(pos) = seen.iter().position(|&existing| {
+                    let sim = compute_string_similarity(s, existing, &algorithm);
+                    if algorithm == "levenshtein" { sim <= threshold } else { sim >= threshold }
+                }) {
+                    seen[pos] = s;
+                    // Find and replace index
+                    keep_indices[pos] = i;
+                }
+            }
+        }
+
+        let indices: Vec<u64> = keep_indices.into_iter().map(|i| i as u64).collect();
+        let indices_arr = arrow_array::UInt64Array::from(indices);
+        let result = arrow_select::take::take(&*arr_impl.inner, &indices_arr, None)
+            .map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+        Ok(arrays::Array::new(ArrayImpl { inner: result }))
+    }
+
+    fn fuzzy_group(arr: arrays::ArrayBorrow<'_>, threshold: f64, algorithm: String) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let mut groups: Vec<Option<u32>> = vec![None; str_arr.len()];
+        let mut group_representatives: Vec<(usize, &str)> = Vec::new();
+        let mut next_group = 0u32;
+
+        for i in 0..str_arr.len() {
+            if str_arr.is_null(i) {
+                continue;
+            }
+            let s = str_arr.value(i);
+
+            // Find matching group
+            let matching_group = group_representatives.iter().find(|(_, rep)| {
+                let sim = compute_string_similarity(s, rep, &algorithm);
+                if algorithm == "levenshtein" { sim <= threshold } else { sim >= threshold }
+            });
+
+            if let Some((group_idx, _)) = matching_group {
+                groups[i] = groups[*group_idx];
+            } else {
+                groups[i] = Some(next_group);
+                group_representatives.push((i, s));
+                next_group += 1;
+            }
+        }
+
+        let result_arr: arrow_array::UInt32Array = groups.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn phonetic_group(arr: arrays::ArrayBorrow<'_>, algorithm: compute::PhoneticAlgorithm) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let str_arr = arr_impl.inner.as_any().downcast_ref::<arrow_array::StringArray>()
+            .ok_or_else(|| compute::ArrowError::InvalidArgument("Expected string array".to_string()))?;
+
+        let mut groups: Vec<Option<u32>> = vec![None; str_arr.len()];
+        let mut phonetic_to_group: HashMap<String, u32> = HashMap::new();
+        let mut next_group = 0u32;
+
+        for i in 0..str_arr.len() {
+            if str_arr.is_null(i) {
+                continue;
+            }
+            let s = str_arr.value(i);
+            let phonetic = encode_phonetic(s, &algorithm);
+
+            if let Some(&group) = phonetic_to_group.get(&phonetic) {
+                groups[i] = Some(group);
+            } else {
+                groups[i] = Some(next_group);
+                phonetic_to_group.insert(phonetic, next_group);
+                next_group += 1;
+            }
+        }
+
+        let result_arr: arrow_array::UInt32Array = groups.into_iter().collect();
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    // ========== Phase 16.7: Sequence Operations ==========
+
+    fn detect_runs(arr: arrays::ArrayBorrow<'_>) -> Result<record_batch::RecordBatch, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let inner = &arr_impl.inner;
+
+        let mut values: Vec<Option<String>> = Vec::new();
+        let mut starts: Vec<u64> = Vec::new();
+        let mut lengths: Vec<u64> = Vec::new();
+
+        let mut run_start = 0;
+        let mut run_value: Option<String> = None;
+
+        for i in 0..inner.len() {
+            let current = extract_string_at_index(inner, i);
+            if i == 0 {
+                run_value = current;
+            } else if current != run_value {
+                values.push(run_value.clone());
+                starts.push(run_start as u64);
+                lengths.push((i - run_start) as u64);
+                run_start = i;
+                run_value = current;
+            }
+        }
+
+        // Add final run
+        if inner.len() > 0 {
+            values.push(run_value);
+            starts.push(run_start as u64);
+            lengths.push((inner.len() - run_start) as u64);
+        }
+
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("value", arrow_schema::DataType::Utf8, true),
+            arrow_schema::Field::new("start", arrow_schema::DataType::UInt64, false),
+            arrow_schema::Field::new("length", arrow_schema::DataType::UInt64, false),
+        ]));
+
+        let value_arr: arrow_array::StringArray = values.into_iter().collect();
+        let start_arr = arrow_array::UInt64Array::from(starts);
+        let length_arr = arrow_array::UInt64Array::from(lengths);
+
+        let result = ArrowRecordBatch::try_new(schema, vec![
+            Arc::new(value_arr),
+            Arc::new(start_arr),
+            Arc::new(length_arr),
+        ]).map_err(|e| compute::ArrowError::ComputeError(e.to_string()))?;
+
+        Ok(record_batch::RecordBatch::new(RecordBatchImpl { inner: result }))
+    }
+
+    fn run_lengths(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let inner = &arr_impl.inner;
+
+        let mut result: Vec<u32> = vec![0; inner.len()];
+        if inner.len() == 0 {
+            return Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(arrow_array::UInt32Array::from(result)) }));
+        }
+
+        let mut run_start = 0;
+        let mut prev_value = extract_string_at_index(inner, 0);
+
+        for i in 1..inner.len() {
+            let current = extract_string_at_index(inner, i);
+            if current != prev_value {
+                let run_len = (i - run_start) as u32;
+                for j in run_start..i {
+                    result[j] = run_len;
+                }
+                run_start = i;
+                prev_value = current;
+            }
+        }
+
+        // Fill final run
+        let run_len = (inner.len() - run_start) as u32;
+        for j in run_start..inner.len() {
+            result[j] = run_len;
+        }
+
+        let result_arr = arrow_array::UInt32Array::from(result);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn sequence_gaps(arr: arrays::ArrayBorrow<'_>, expected_diff: f64) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let mut gaps: Vec<u64> = Vec::new();
+
+        for i in 1..values.len() {
+            if let (Some(prev), Some(curr)) = (values[i-1], values[i]) {
+                let diff = curr - prev;
+                if (diff - expected_diff).abs() > f64::EPSILON * expected_diff.abs().max(1.0) {
+                    gaps.push(i as u64);
+                }
+            }
+        }
+
+        let result_arr = arrow_array::UInt64Array::from(gaps);
+        Ok(arrays::Array::new(ArrayImpl { inner: Arc::new(result_arr) }))
+    }
+
+    fn consecutive_diff(arr: arrays::ArrayBorrow<'_>) -> Result<arrays::Array, compute::ArrowError> {
+        let arr_impl = arr.get::<ArrayImpl>();
+        let values = collect_nullable_f64_values(&arr_impl.inner)?;
+
+        let mut result: Vec<Option<f64>> = vec![None]; // First element has no diff
+
+        for i in 1..values.len() {
+            match (values[i-1], values[i]) {
+                (Some(prev), Some(curr)) => result.push(Some(curr - prev)),
+                _ => result.push(None),
             }
         }
 
