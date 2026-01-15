@@ -1,38 +1,12 @@
-/// Arrow compute kernels
+/// Arrow compute kernels - wrapping arrow-rs functionality
 interface compute {
     use types.{arrow-error, data-type, time-unit};
     use arrays.{array};
     use record-batch.{record-batch};
 
-    /// Sort order
-    enum sort-order {
-        ascending,
-        descending,
-    }
-
-    /// Null handling in sort
-    enum null-ordering {
-        nulls-first,
-        nulls-last,
-    }
-
-    /// Sort options
-    record sort-options {
-        descending: bool,
-        nulls-first: bool,
-    }
-
-    /// Comparison operators
-    enum comparison-op {
-        eq,
-        not-eq,
-        lt,
-        lt-eq,
-        gt,
-        gt-eq,
-    }
-
-    /// Arithmetic operations
+    // ========================================================================
+    // Arithmetic Operations (arrow-arith)
+    // ========================================================================
 
     /// Add two arrays element-wise
     add: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
@@ -46,2830 +20,305 @@ interface compute {
     /// Divide two arrays element-wise
     divide: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
 
-    /// Compute the remainder of division
+    /// Modulo (remainder) of two arrays element-wise
     modulo: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
 
-    /// Negate an array element-wise
+    /// Negate array values
     negate: func(arr: borrow<array>) -> result<array, arrow-error>;
 
-    /// ========== Wrapping Arithmetic (no overflow errors) ==========
-
-    /// Add two arrays with wrapping on overflow (integers only)
+    /// Add with wrapping overflow behavior
     add-wrapping: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
 
-    /// Subtract two arrays with wrapping on overflow (integers only)
+    /// Subtract with wrapping overflow behavior
     subtract-wrapping: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
 
-    /// Multiply two arrays with wrapping on overflow (integers only)
+    /// Multiply with wrapping overflow behavior
     multiply-wrapping: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
 
-    /// Negate an array with wrapping on overflow (integers only)
+    /// Negate with wrapping overflow behavior
     negate-wrapping: func(arr: borrow<array>) -> result<array, arrow-error>;
 
-    /// ========== Saturation Arithmetic (clamp on overflow) ==========
-
-    /// Add two arrays with saturation (clamp to min/max on overflow)
-    add-saturating: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Subtract two arrays with saturation
-    sub-saturating: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Multiply two arrays with saturation
-    mul-saturating: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Add a scalar with saturation
-    add-scalar-saturating: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
-
-    /// Subtract a scalar with saturation
-    sub-scalar-saturating: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
-
-    /// Multiply by scalar with saturation
-    mul-scalar-saturating: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
-
-    /// Add a scalar to an array
-    add-scalar-i64: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
-
-    /// Add a scalar to an array (float)
-    add-scalar-f64: func(arr: borrow<array>, scalar: f64) -> result<array, arrow-error>;
-
-    /// Multiply array by a scalar
-    multiply-scalar-i64: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
-
-    /// Multiply array by a scalar (float)
-    multiply-scalar-f64: func(arr: borrow<array>, scalar: f64) -> result<array, arrow-error>;
-
-    /// Subtract a scalar from an array
-    subtract-scalar-i64: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
-
-    /// Subtract a scalar from an array (float)
-    subtract-scalar-f64: func(arr: borrow<array>, scalar: f64) -> result<array, arrow-error>;
-
-    /// Divide array by a scalar
-    divide-scalar-i64: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
-
-    /// Divide array by a scalar (float)
-    divide-scalar-f64: func(arr: borrow<array>, scalar: f64) -> result<array, arrow-error>;
-
-    /// Modulo array by a scalar
-    modulo-scalar-i64: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
-
-    /// ========== Decimal Operations ==========
-
-    /// Multiply two decimal arrays with specified result precision and scale
-    multiply-decimal: func(left: borrow<array>, right: borrow<array>, result-precision: u8, result-scale: s8) -> result<array, arrow-error>;
-
-    /// Divide two decimal arrays with specified result precision and scale
-    divide-decimal: func(left: borrow<array>, right: borrow<array>, result-precision: u8, result-scale: s8) -> result<array, arrow-error>;
-
-    /// Rescale decimal to new precision and scale
-    decimal-rescale: func(arr: borrow<array>, new-precision: u8, new-scale: s8) -> result<array, arrow-error>;
-
-    /// Round decimal to specified scale
-    decimal-round: func(arr: borrow<array>, scale: s8) -> result<array, arrow-error>;
-
-    /// Truncate decimal to specified scale
-    decimal-trunc: func(arr: borrow<array>, scale: s8) -> result<array, arrow-error>;
-
-    /// Absolute value for decimal arrays (preserves precision/scale)
-    decimal-abs: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Negate decimal array (preserves precision/scale)
-    decimal-negate: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Sum decimal array with result precision/scale
-    decimal-sum: func(arr: borrow<array>, result-precision: u8, result-scale: s8) -> result<array, arrow-error>;
-
-    /// ========== Mathematical Functions ==========
-
-    /// Absolute value
-    abs: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Round to specified number of decimal places
-    round: func(arr: borrow<array>, decimals: s32) -> result<array, arrow-error>;
-
-    /// Ceiling (round up to nearest integer)
-    ceil: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Floor (round down to nearest integer)
-    floor: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Truncate (round towards zero)
-    trunc: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Square root
-    sqrt: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Cube root
-    cbrt: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Raise to power (element-wise)
-    pow: func(base: borrow<array>, exponent: borrow<array>) -> result<array, arrow-error>;
-
-    /// Raise to scalar power
-    pow-scalar: func(arr: borrow<array>, exponent: f64) -> result<array, arrow-error>;
-
-    /// Exponential (e^x)
-    exp: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Natural logarithm (ln)
-    ln: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Base-2 logarithm
-    log2: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Base-10 logarithm
-    log10: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Logarithm with custom base
-    log: func(arr: borrow<array>, base: f64) -> result<array, arrow-error>;
-
-    /// Sign function (-1, 0, or 1)
-    sign: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Extended Mathematical Functions ==========
-
-    /// Convert radians to degrees
-    degrees: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Convert degrees to radians
-    radians: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Euclidean distance sqrt(x^2 + y^2)
-    hypot: func(x: borrow<array>, y: borrow<array>) -> result<array, arrow-error>;
-
-    /// exp(x) - 1, accurate for small x values
-    expm1: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ln(1 + x), accurate for small x values
-    log1p: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Copy sign from sign array to magnitude array
-    copysign: func(magnitude: borrow<array>, sign: borrow<array>) -> result<array, arrow-error>;
-
-    /// Element-wise maximum of two arrays (not aggregate max)
-    fmax: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Element-wise minimum of two arrays (not aggregate min)
-    fmin: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Greatest common divisor (integers only)
-    gcd: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Least common multiple (integers only)
-    lcm: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Trigonometric Functions ==========
-
-    /// Sine
-    sin: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Cosine
-    cos: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Tangent
-    tan: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Arc sine (inverse sine)
-    asin: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Arc cosine (inverse cosine)
-    acos: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Arc tangent (inverse tangent)
-    atan: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Two-argument arc tangent (atan2)
-    atan2: func(y: borrow<array>, x: borrow<array>) -> result<array, arrow-error>;
-
-    /// Hyperbolic sine
-    sinh: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Hyperbolic cosine
-    cosh: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Hyperbolic tangent
-    tanh: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Comparison operations
-
-    /// Compare two arrays element-wise
-    compare: func(left: borrow<array>, right: borrow<array>, op: comparison-op) -> result<array, arrow-error>;
-
-    /// Compare array with an i64 scalar
-    compare-scalar-i64: func(arr: borrow<array>, scalar: s64, op: comparison-op) -> result<array, arrow-error>;
-
-    /// Compare array with an f64 scalar
-    compare-scalar-f64: func(arr: borrow<array>, scalar: f64, op: comparison-op) -> result<array, arrow-error>;
-
-    /// Compare array with a string scalar
-    compare-scalar-string: func(arr: borrow<array>, scalar: string, op: comparison-op) -> result<array, arrow-error>;
-
-    /// Check if values are distinct (NULL-safe: NULL is considered equal to NULL)
-    distinct: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if values are not distinct (NULL-safe: NULL equals NULL returns false)
-    not-distinct: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== List Membership ==========
-
-    /// Check if integer values are in the provided list
-    in-list-i64: func(arr: borrow<array>, values: list<s64>) -> result<array, arrow-error>;
-
-    /// Check if string values are in the provided list
-    in-list-string: func(arr: borrow<array>, values: list<string>) -> result<array, arrow-error>;
-
-    /// Boolean operations
-
-    /// Logical AND of two boolean arrays
-    and: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Logical OR of two boolean arrays
-    or: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Logical NOT of a boolean array
-    not: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Boolean AND NOT (left AND (NOT right))
-    and-not: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Three-valued AND (SQL NULL semantics: NULL AND TRUE = NULL, NULL AND FALSE = FALSE)
-    and-kleene: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Three-valued OR (SQL NULL semantics: NULL OR TRUE = TRUE, NULL OR FALSE = NULL)
-    or-kleene: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if values are null
-    is-null: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if values are not null
-    is-not-null: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Bitwise Operations ==========
-
-    /// Bitwise AND of two integer arrays
-    bitwise-and: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Bitwise OR of two integer arrays
-    bitwise-or: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Bitwise XOR of two integer arrays
-    bitwise-xor: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Bitwise NOT of an integer array
-    bitwise-not: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Bitwise AND NOT (left AND (NOT right))
-    bitwise-and-not: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Left shift array values by n bits
-    bitwise-shift-left: func(arr: borrow<array>, n: u32) -> result<array, arrow-error>;
-
-    /// Right shift array values by n bits
-    bitwise-shift-right: func(arr: borrow<array>, n: u32) -> result<array, arrow-error>;
-
-    /// Bitwise AND with scalar
-    bitwise-and-scalar: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
-
-    /// Bitwise OR with scalar
-    bitwise-or-scalar: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
-
-    /// Bitwise XOR with scalar
-    bitwise-xor-scalar: func(arr: borrow<array>, scalar: s64) -> result<array, arrow-error>;
-
-    /// Bitwise AND of all values in array (aggregate)
-    bitwise-and-agg: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
-
-    /// Bitwise OR of all values in array (aggregate)
-    bitwise-or-agg: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
-
-    /// Bitwise XOR of all values in array (aggregate)
-    bitwise-xor-agg: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
-
-    /// Aggregation operations
-
-    /// Sum of all values
+    // ========================================================================
+    // Aggregation Operations (arrow-arith aggregate)
+    // ========================================================================
+
+    /// Sum of numeric array (returns i64)
     sum-i64: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
 
-    /// Sum of all values (float)
+    /// Sum of numeric array (returns f64)
     sum-f64: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
 
-    /// Minimum value
+    /// Minimum value in numeric array (returns i64)
     min-i64: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
 
-    /// Minimum value (float)
+    /// Minimum value in numeric array (returns f64)
     min-f64: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+
+    /// Maximum value in numeric array (returns i64)
+    max-i64: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
+
+    /// Maximum value in numeric array (returns f64)
+    max-f64: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
 
     /// Minimum string value
     min-string: func(arr: borrow<array>) -> result<option<string>, arrow-error>;
 
-    /// Maximum value
-    max-i64: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
-
-    /// Maximum value (float)
-    max-f64: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
     /// Maximum string value
     max-string: func(arr: borrow<array>) -> result<option<string>, arrow-error>;
 
-    /// Minimum binary value
-    min-binary: func(arr: borrow<array>) -> result<option<list<u8>>, arrow-error>;
+    /// Boolean AND aggregate (all true)
+    bool-and: func(arr: borrow<array>) -> result<option<bool>, arrow-error>;
 
-    /// Maximum binary value
-    max-binary: func(arr: borrow<array>) -> result<option<list<u8>>, arrow-error>;
+    /// Boolean OR aggregate (any true)
+    bool-or: func(arr: borrow<array>) -> result<option<bool>, arrow-error>;
 
-    /// Minimum boolean value (false < true)
-    bool-min: func(arr: borrow<array>) -> result<option<bool>, arrow-error>;
+    // ========================================================================
+    // Comparison Operations (arrow-ord)
+    // ========================================================================
 
-    /// Maximum boolean value (false < true)
-    bool-max: func(arr: borrow<array>) -> result<option<bool>, arrow-error>;
+    /// Comparison operator
+    enum compare-op {
+        equal,
+        not-equal,
+        less-than,
+        less-than-or-equal,
+        greater-than,
+        greater-than-or-equal,
+    }
 
-    /// Minimum fixed-size binary value
-    min-fixed-binary: func(arr: borrow<array>) -> result<option<list<u8>>, arrow-error>;
+    /// Compare two arrays element-wise
+    compare: func(left: borrow<array>, right: borrow<array>, op: compare-op) -> result<array, arrow-error>;
 
-    /// Maximum fixed-size binary value
-    max-fixed-binary: func(arr: borrow<array>) -> result<option<list<u8>>, arrow-error>;
+    /// Compare array to scalar i64
+    compare-scalar-i64: func(arr: borrow<array>, value: s64, op: compare-op) -> result<array, arrow-error>;
 
-    /// Sum with checked overflow (returns single-element array with appropriate type)
-    sum-checked: func(arr: borrow<array>) -> result<array, arrow-error>;
+    /// Compare array to scalar f64
+    compare-scalar-f64: func(arr: borrow<array>, value: f64, op: compare-op) -> result<array, arrow-error>;
 
-    /// Count non-null values
-    count: func(arr: borrow<array>) -> u64;
+    /// Compare array to scalar string
+    compare-scalar-string: func(arr: borrow<array>, value: string, op: compare-op) -> result<array, arrow-error>;
 
-    /// Mean (average) of values
-    mean: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
+    /// Check if values are distinct (treats nulls as equal)
+    distinct: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
 
-    /// Selection and filtering
+    /// Check if values are not distinct
+    not-distinct: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
 
-    /// Filter an array based on a boolean mask
+    // ========================================================================
+    // Boolean Operations (arrow-arith boolean)
+    // ========================================================================
+
+    /// Boolean AND of two arrays
+    and: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Boolean OR of two arrays
+    or: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Boolean NOT of array
+    not: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Boolean AND NOT (left AND NOT right)
+    and-not: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Three-valued AND (Kleene logic)
+    and-kleene: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Three-valued OR (Kleene logic)
+    or-kleene: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check which values are null
+    is-null: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Check which values are not null
+    is-not-null: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    // ========================================================================
+    // Bitwise Operations (arrow-arith bitwise)
+    // ========================================================================
+
+    /// Bitwise AND of two arrays
+    bitwise-and: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Bitwise OR of two arrays
+    bitwise-or: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Bitwise XOR of two arrays
+    bitwise-xor: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Bitwise NOT of array
+    bitwise-not: func(arr: borrow<array>) -> result<array, arrow-error>;
+
+    /// Bitwise AND NOT
+    bitwise-and-not: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
+
+    /// Bitwise shift left
+    bitwise-shift-left: func(arr: borrow<array>, shift: borrow<array>) -> result<array, arrow-error>;
+
+    /// Bitwise shift right
+    bitwise-shift-right: func(arr: borrow<array>, shift: borrow<array>) -> result<array, arrow-error>;
+
+    // ========================================================================
+    // Sorting Operations (arrow-ord sort)
+    // ========================================================================
+
+    /// Sort options
+    record sort-options {
+        /// Sort in descending order
+        descending: bool,
+        /// Put nulls first
+        nulls-first: bool,
+    }
+
+    /// Sort array and return indices
+    sort-to-indices: func(arr: borrow<array>, options: option<sort-options>) -> result<array, arrow-error>;
+
+    /// Sort array values
+    sort: func(arr: borrow<array>, options: option<sort-options>) -> result<array, arrow-error>;
+
+    /// Sort array with limit (partial sort)
+    sort-limit: func(arr: borrow<array>, options: option<sort-options>, limit: u64) -> result<array, arrow-error>;
+
+    /// Lexicographic sort of multiple arrays (returns indices)
+    lexsort: func(arrays: list<borrow<array>>, options: list<sort-options>) -> result<array, arrow-error>;
+
+    /// Compute rank of each element
+    rank: func(arr: borrow<array>, options: option<sort-options>) -> result<array, arrow-error>;
+
+    // ========================================================================
+    // Selection Operations (arrow-select)
+    // ========================================================================
+
+    /// Filter array by boolean mask
     filter: func(arr: borrow<array>, predicate: borrow<array>) -> result<array, arrow-error>;
 
-    /// Filter a record batch based on a boolean mask
+    /// Filter record batch by boolean mask
     filter-record-batch: func(batch: borrow<record-batch>, predicate: borrow<array>) -> result<record-batch, arrow-error>;
 
     /// Take values at specified indices
     take: func(arr: borrow<array>, indices: borrow<array>) -> result<array, arrow-error>;
 
-    /// Take values from a record batch at specified indices
+    /// Take rows from record batch at specified indices
     take-record-batch: func(batch: borrow<record-batch>, indices: borrow<array>) -> result<record-batch, arrow-error>;
 
-    /// Sorting
+    /// Concatenate arrays
+    concat: func(arrays: list<borrow<array>>) -> result<array, arrow-error>;
 
-    /// Get sort indices for an array
-    sort-indices: func(arr: borrow<array>, options: sort-options) -> result<array, arrow-error>;
+    /// Concatenate record batches
+    concat-batches: func(batches: list<borrow<record-batch>>) -> result<record-batch, arrow-error>;
 
-    /// Sort an array
-    sort: func(arr: borrow<array>, options: sort-options) -> result<array, arrow-error>;
+    /// Interleave arrays according to indices
+    interleave: func(arrays: list<borrow<array>>, indices: list<tuple<u32, u32>>) -> result<array, arrow-error>;
 
-    /// Sort a record batch by specified columns
-    sort-record-batch: func(
-        batch: borrow<record-batch>,
-        sort-columns: list<tuple<string, sort-options>>
-    ) -> result<record-batch, arrow-error>;
+    /// Return null where predicate is true, otherwise return original value
+    nullif: func(arr: borrow<array>, predicate: borrow<array>) -> result<array, arrow-error>;
 
-    /// Get lexicographic sort indices for multiple arrays
-    lexsort: func(arrays: list<array>, options: list<sort-options>) -> result<array, arrow-error>;
+    /// Zip two arrays based on boolean selector (if true take left, else right)
+    zip: func(predicate: borrow<array>, left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
 
-    /// Sort an array and return only the first n elements (top-k)
-    sort-limit: func(arr: borrow<array>, options: sort-options, limit: u64) -> result<array, arrow-error>;
-
-    /// Get sort indices for an array, limited to first n (top-k indices)
-    sort-indices-limit: func(arr: borrow<array>, options: sort-options, limit: u64) -> result<array, arrow-error>;
-
-    /// ========== Advanced Sorting Operations ==========
-
-    /// Stable sort - preserves relative order of equal elements
-    sort-stable: func(arr: borrow<array>, descending: bool) -> result<array, arrow-error>;
-
-    /// Stable sort to indices - preserves relative order of equal elements
-    sort-to-indices-stable: func(arr: borrow<array>, descending: bool) -> result<array, arrow-error>;
-
-    /// Lexicographic stable sort for multiple columns
-    lexsort-stable: func(columns: list<borrow<array>>, descending: list<bool>) -> result<array, arrow-error>;
-
-    /// Find nth smallest element efficiently (quickselect algorithm) - O(n) average
-    /// Returns single-element array with the nth smallest value
-    nth-element: func(arr: borrow<array>, n: u64) -> result<array, arrow-error>;
-
-    /// Partition array around nth element
-    /// Returns (elements < nth, nth element, elements >= nth)
-    partition-nth: func(arr: borrow<array>, n: u64) -> result<tuple<array, array, array>, arrow-error>;
-
-    /// Top-K with partial sort optimization
-    /// More efficient than full sort when k << n
-    top-k-by: func(arr: borrow<array>, k: u64, descending: bool) -> result<array, arrow-error>;
-
-    /// Limit/offset operations
-
-    /// Get the first n elements
-    limit: func(arr: borrow<array>, n: u64) -> array;
-
-    /// Skip the first n elements
-    skip: func(arr: borrow<array>, n: u64) -> array;
-
-    /// Shift array elements by offset (positive = shift right with nulls, negative = shift left with nulls)
+    /// Shift array values by offset (positive = shift right, negative = shift left)
     shift: func(arr: borrow<array>, offset: s64) -> result<array, arrow-error>;
 
-    /// Casting
+    // ========================================================================
+    // String Operations (arrow-string)
+    // ========================================================================
 
-    /// Cast an array to a different data type
-    cast: func(arr: borrow<array>, to-type: data-type) -> result<array, arrow-error>;
-
-    /// Check if casting between two types is possible
-    can-cast-types: func(from-type: data-type, to-type: data-type) -> bool;
-
-    /// Safe cast that returns null for invalid conversions instead of error
-    try-cast: func(arr: borrow<array>, to-type: data-type) -> result<array, arrow-error>;
-
-    /// Cast options for fine-grained control
-    record cast-options {
-        /// If true, return error on invalid conversions; if false, returns null for invalid values
-        safe: bool,
-        /// Optional format string for temporal parsing (strftime format)
-        format-string: option<string>,
-    }
-
-    /// Cast with options for fine-grained control
-    cast-with-options: func(arr: borrow<array>, to-type: data-type, options: cast-options) -> result<array, arrow-error>;
-
-    /// Parse strings to type with optional format
-    parse-string: func(arr: borrow<array>, to-type: data-type, format: option<string>) -> result<array, arrow-error>;
-
-    /// String operations
-
-    /// Get string length
+    /// Get length of each string in characters
     string-length: func(arr: borrow<array>) -> result<array, arrow-error>;
 
-    /// Get bit length of string/binary data
+    /// Get length of each value in bits
     bit-length: func(arr: borrow<array>) -> result<array, arrow-error>;
 
-    /// Convert to lowercase
-    string-lower: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Convert to uppercase
-    string-upper: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Trim whitespace from both ends
-    string-trim: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if string contains substring
-    string-contains: func(arr: borrow<array>, substring: string) -> result<array, arrow-error>;
-
-    /// Check if string starts with prefix
-    string-starts-with: func(arr: borrow<array>, prefix: string) -> result<array, arrow-error>;
-
-    /// Check if string ends with suffix
-    string-ends-with: func(arr: borrow<array>, suffix: string) -> result<array, arrow-error>;
-
-    /// Concatenate strings element-wise
-    string-concat: func(arrays: list<array>) -> result<array, arrow-error>;
-
-    /// Concatenate corresponding elements of two string arrays (a[i] + b[i])
-    concat-elements: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract substring from start position with optional length
-    substring: func(arr: borrow<array>, start: s64, length: option<s64>) -> result<array, arrow-error>;
-
-    /// SQL LIKE pattern matching (% and _ wildcards)
+    /// Check if strings match LIKE pattern
     string-like: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
 
-    /// Case-insensitive SQL LIKE pattern matching
+    /// Check if strings match ILIKE pattern (case-insensitive)
     string-ilike: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
 
-    /// SQL NOT LIKE pattern matching
+    /// Check if strings do NOT match LIKE pattern
     string-nlike: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
 
-    /// Case-insensitive SQL NOT LIKE pattern matching
+    /// Check if strings do NOT match ILIKE pattern
     string-nilike: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
 
-    /// Left-pad string to specified length with fill character
-    string-lpad: func(arr: borrow<array>, length: u64, fill: string) -> result<array, arrow-error>;
+    /// Check if strings start with prefix
+    string-starts-with: func(arr: borrow<array>, prefix: string) -> result<array, arrow-error>;
 
-    /// Right-pad string to specified length with fill character
-    string-rpad: func(arr: borrow<array>, length: u64, fill: string) -> result<array, arrow-error>;
+    /// Check if strings end with suffix
+    string-ends-with: func(arr: borrow<array>, suffix: string) -> result<array, arrow-error>;
 
-    /// Trim characters from the left side of strings
-    string-ltrim: func(arr: borrow<array>, chars: option<string>) -> result<array, arrow-error>;
+    /// Check if strings contain substring
+    string-contains: func(arr: borrow<array>, substring: string) -> result<array, arrow-error>;
 
-    /// Trim characters from the right side of strings
-    string-rtrim: func(arr: borrow<array>, chars: option<string>) -> result<array, arrow-error>;
+    /// Check if strings match regex pattern
+    regexp-is-match: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
 
-    /// Repeat each string n times
-    string-repeat: func(arr: borrow<array>, count: u64) -> result<array, arrow-error>;
+    /// Extract regex matches
+    regexp-match: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
 
-    /// Reverse the characters in each string
-    string-reverse: func(arr: borrow<array>) -> result<array, arrow-error>;
+    /// Extract substring by character position
+    substring: func(arr: borrow<array>, start: s64, length: option<u64>) -> result<array, arrow-error>;
 
-    /// Get the ASCII value of the first character in each string
-    string-ascii: func(arr: borrow<array>) -> result<array, arrow-error>;
+    /// Concatenate string arrays element-wise
+    concat-elements: func(arrays: list<borrow<array>>) -> result<array, arrow-error>;
 
-    /// Replace occurrences of a pattern with a replacement string
-    string-replace: func(arr: borrow<array>, pattern: string, replacement: string) -> result<array, arrow-error>;
+    // ========================================================================
+    // Temporal Operations (arrow-arith temporal)
+    // ========================================================================
 
-    /// Split strings on a delimiter (returns list array)
-    string-split: func(arr: borrow<array>, delimiter: string) -> result<array, arrow-error>;
-
-    /// ========== Advanced String Operations ==========
-
-    /// Get first N characters from each string
-    string-left: func(arr: borrow<array>, n: u64) -> result<array, arrow-error>;
-
-    /// Get last N characters from each string
-    string-right: func(arr: borrow<array>, n: u64) -> result<array, arrow-error>;
-
-    /// Capitalize first letter of each word (title case)
-    string-initcap: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Find position of substring (1-indexed, 0 if not found)
-    string-position: func(arr: borrow<array>, substring: string) -> result<array, arrow-error>;
-
-    /// Find position of substring starting from offset (1-indexed, 0 if not found)
-    string-position-from: func(arr: borrow<array>, substring: string, start: u64) -> result<array, arrow-error>;
-
-    /// Character-by-character translation (replace chars in from with corresponding chars in to)
-    string-translate: func(arr: borrow<array>, from-chars: string, to-chars: string) -> result<array, arrow-error>;
-
-    /// Concatenate string arrays with separator
-    string-concat-ws: func(separator: string, arrays: list<array>) -> result<array, arrow-error>;
-
-    /// Extract part from split string (1-indexed, like SQL SPLIT_PART)
-    string-split-part: func(arr: borrow<array>, delimiter: string, part: u32) -> result<array, arrow-error>;
-
-    /// Substring by character count (not bytes) - handles UTF-8 properly
-    /// Start is 0-indexed, length is optional (if None, returns rest of string)
-    substring-by-char: func(arr: borrow<array>, start: s64, length: option<u64>) -> result<array, arrow-error>;
-
-    /// Character from ASCII code (inverse of string-ascii)
-    /// Returns single character string for each ASCII code
-    string-chr: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Unicode Normalization & Case Conversion ==========
-
-    /// Unicode normalization forms
-    enum unicode-normalization {
-        /// Canonical decomposition (NFD)
-        nfd,
-        /// Canonical decomposition followed by canonical composition (NFC)
-        nfc,
-        /// Compatibility decomposition (NFKD)
-        nfkd,
-        /// Compatibility decomposition followed by canonical composition (NFKC)
-        nfkc,
-    }
-
-    /// Normalize Unicode strings to specified form
-    unicode-normalize: func(arr: borrow<array>, form: unicode-normalization) -> result<array, arrow-error>;
-
-    /// Check if strings are in normalized form
-    is-normalized: func(arr: borrow<array>, form: unicode-normalization) -> result<array, arrow-error>;
-
-    /// Remove diacritics/accents from strings (e.g., "café" -> "cafe")
-    remove-diacritics: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Case conversion styles
-    enum case-style {
-        /// lowercase
-        lower,
-        /// UPPERCASE
-        upper,
-        /// Title Case
-        title,
-        /// snake_case
-        snake,
-        /// camelCase
-        camel,
-        /// PascalCase
-        pascal,
-        /// kebab-case
-        kebab,
-        /// SCREAMING_SNAKE_CASE
-        screaming-snake,
-    }
-
-    /// Convert string to specified case style
-    to-case: func(arr: borrow<array>, style: case-style) -> result<array, arrow-error>;
-
-    /// ========== Array Generation ==========
-
-    /// Create an Int64 array with values from start to end (exclusive) with step
-    make-array-i64: func(start: s64, end: s64, step: s64) -> result<array, arrow-error>;
-
-    /// Create an array filled with a repeated Int64 value
-    array-fill-i64: func(value: s64, length: u64) -> array;
-
-    /// Create an array filled with a repeated Float64 value
-    array-fill-f64: func(value: f64, length: u64) -> array;
-
-    /// Create an array filled with a repeated string value
-    array-fill-string: func(value: string, length: u64) -> array;
-
-    /// Create an array filled with null values of the specified type
-    array-fill-null: func(data-type: data-type, length: u64) -> result<array, arrow-error>;
-
-    /// Null handling
-
-    /// Fill null values with a scalar (int)
-    fill-null-i64: func(arr: borrow<array>, value: s64) -> result<array, arrow-error>;
-
-    /// Fill null values with a scalar (float)
-    fill-null-f64: func(arr: borrow<array>, value: f64) -> result<array, arrow-error>;
-
-    /// Fill null values with a scalar (string)
-    fill-null-string: func(arr: borrow<array>, value: string) -> result<array, arrow-error>;
-
-    /// Fill null values with a scalar (bool)
-    fill-null-bool: func(arr: borrow<array>, value: bool) -> result<array, arrow-error>;
-
-    /// Coalesce - return first non-null value from multiple arrays
-    coalesce: func(arrays: list<array>) -> result<array, arrow-error>;
-
-    /// Set values to null where condition is true
-    nullif: func(arr: borrow<array>, condition: borrow<array>) -> result<array, arrow-error>;
-
-    /// Select values based on condition (if condition then truthy else falsy)
-    if-else: func(condition: borrow<array>, truthy: borrow<array>, falsy: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== SQL Functions ==========
-
-    /// BETWEEN: Check if values are in range [low, high] (inclusive)
-    between-i64: func(arr: borrow<array>, low: s64, high: s64) -> result<array, arrow-error>;
-
-    /// BETWEEN for float values
-    between-f64: func(arr: borrow<array>, low: f64, high: f64) -> result<array, arrow-error>;
-
-    /// BETWEEN for string values (lexicographic comparison)
-    between-string: func(arr: borrow<array>, low: string, high: string) -> result<array, arrow-error>;
-
-    /// GREATEST: Element-wise maximum across multiple arrays
-    greatest: func(arrays: list<array>) -> result<array, arrow-error>;
-
-    /// LEAST: Element-wise minimum across multiple arrays
-    least: func(arrays: list<array>) -> result<array, arrow-error>;
-
-    /// NULLIF with array comparison (set to null where arrays are equal)
-    nullif-eq: func(arr: borrow<array>, compare: borrow<array>) -> result<array, arrow-error>;
-
-    /// String aggregation (concatenate strings with separator)
-    string-agg: func(arr: borrow<array>, separator: string) -> result<option<string>, arrow-error>;
-
-    /// ========== Advanced Null Handling ==========
-
-    /// Forward fill nulls (carry last valid value forward)
-    fill-forward: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Backward fill nulls (carry next valid value backward)
-    fill-backward: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Drop null values from array (returns shorter array)
-    drop-nulls: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Set Operations ==========
-
-    /// Union of two arrays (all unique values from both)
-    set-union: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Intersection of two arrays (values in both)
-    set-intersection: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Difference of two arrays (values in left but not right)
-    set-difference: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Grouping & Aggregation ==========
-
-    /// Aggregation function types
-    enum agg-function {
-        /// Sum of values
-        sum,
-        /// Minimum value
-        %min,
-        /// Maximum value
-        %max,
-        /// Count of values
-        count,
-        /// Mean/average
-        mean,
-        /// First value
-        first,
-        /// Last value
-        last,
-    }
-
-    /// Aggregate specification for group-by operations
-    record aggregate-spec {
-        /// Column index to aggregate
-        column-index: u32,
-        /// Aggregation function to apply
-        function: agg-function,
-        /// Output column name
-        output-name: string,
-    }
-
-    /// Group indices by values in an array
-    /// Returns unique values array and corresponding group indices
-    group-indices: func(arr: borrow<array>) -> result<tuple<array, list<list<u64>>>, arrow-error>;
-
-    /// Group by columns and aggregate
-    group-by: func(
-        batch: borrow<record-batch>,
-        group-columns: list<u32>,
-        aggregates: list<aggregate-spec>
-    ) -> result<record-batch, arrow-error>;
-
-    /// ========== Multi-Aggregate GroupBy ==========
-
-    /// Aggregation specification with column name and function name
-    record column-aggregation {
-        /// Column name to aggregate
-        column: string,
-        /// Aggregation function name: "sum", "min", "max", "count", "count_distinct",
-        /// "mean", "avg", "first", "last", "std", "var", "median"
-        function: string,
-        /// Output column name for the result
-        output-name: string,
-    }
-
-    /// Group by columns (by name) with multiple aggregations
-    /// Returns record batch with group columns + all aggregation results
-    group-by-multi-agg: func(
-        batch: borrow<record-batch>,
-        group-columns: list<string>,
-        aggregations: list<column-aggregation>
-    ) -> result<record-batch, arrow-error>;
-
-    /// ========== Hierarchical Grouping (ROLLUP/CUBE) ==========
-
-    /// Hierarchical grouping mode
-    enum grouping-mode {
-        /// Standard group by (no subtotals)
-        standard,
-        /// ROLLUP - hierarchical subtotals
-        /// For columns (A, B, C): produces (A,B,C), (A,B,NULL), (A,NULL,NULL), (NULL,NULL,NULL)
-        rollup,
-        /// CUBE - all combinations of subtotals
-        /// For columns (A, B): produces all 2^n combinations
-        cube,
-    }
-
-    /// Group by with hierarchical totals (ROLLUP/CUBE)
-    /// Returns record batch with group columns + aggregation results + grouping_id column
-    /// The grouping_id column is a bitmask indicating which group columns are aggregated
-    group-by-hierarchical: func(
-        batch: borrow<record-batch>,
-        group-columns: list<string>,
-        aggregations: list<column-aggregation>,
-        mode: grouping-mode
-    ) -> result<record-batch, arrow-error>;
-
-    /// Get grouping level indicator for a specific column in hierarchical results
-    /// Returns bitmask indicating aggregation level (1 = column is aggregated/NULL in subtotal)
-    grouping-id: func(batch: borrow<record-batch>, group-columns: list<string>) -> result<array, arrow-error>;
-
-    /// ========== Bucketing & Histogram Grouping ==========
-
-    /// Assign values to buckets based on explicit boundaries
-    /// Returns array of bucket indices (0 to len(boundaries))
-    /// Values below first boundary get bucket 0, between boundaries[i-1] and boundaries[i] get bucket i
-    bucketize: func(arr: borrow<array>, boundaries: list<f64>) -> result<array, arrow-error>;
-
-    /// Create equal-width buckets automatically from min to max
-    /// Returns array of bucket indices (0 to num-buckets-1)
-    bucketize-equal-width: func(arr: borrow<array>, num-buckets: u32) -> result<array, arrow-error>;
-
-    /// Create equal-frequency (quantile-based) buckets
-    /// Each bucket has approximately equal number of values
-    bucketize-equal-freq: func(arr: borrow<array>, num-buckets: u32) -> result<array, arrow-error>;
-
-    /// Compute histogram with explicit boundaries
-    /// Returns record batch with columns: bucket_start, bucket_end, count
-    histogram-with-boundaries: func(arr: borrow<array>, boundaries: list<f64>) -> result<record-batch, arrow-error>;
-
-    /// ========== Join Operations ==========
-
-    /// Join type for combining record batches
-    enum join-type {
-        /// Inner join - only matching rows from both sides
-        inner,
-        /// Left join - all rows from left, matching from right
-        left,
-        /// Right join - all rows from right, matching from left
-        %right,
-        /// Full outer join - all rows from both sides
-        full,
-        /// Left semi join - rows from left that have match in right
-        left-semi,
-        /// Left anti join - rows from left that have no match in right
-        left-anti,
-        /// Right semi join - rows from right that have match in left
-        right-semi,
-        /// Right anti join - rows from right that have no match in left
-        right-anti,
-    }
-
-    /// Join two record batches on specified columns
-    join: func(
-        left: borrow<record-batch>,
-        %right: borrow<record-batch>,
-        left-on: list<string>,
-        right-on: list<string>,
-        join-type: join-type
-    ) -> result<record-batch, arrow-error>;
-
-    /// Cross join (cartesian product) of two record batches
-    cross-join: func(
-        left: borrow<record-batch>,
-        %right: borrow<record-batch>
-    ) -> result<record-batch, arrow-error>;
-
-    /// Hash join two record batches on specified columns
-    /// Returns a new record batch with columns from both inputs
-    hash-join: func(
-        left: borrow<record-batch>,
-        right: borrow<record-batch>,
-        left-on: list<string>,
-        right-on: list<string>,
-        join-type: join-type
-    ) -> result<record-batch, arrow-error>;
-
-    /// Hash join with suffix for duplicate column names
-    hash-join-with-suffix: func(
-        left: borrow<record-batch>,
-        right: borrow<record-batch>,
-        left-on: list<string>,
-        right-on: list<string>,
-        join-type: join-type,
-        left-suffix: string,
-        right-suffix: string
-    ) -> result<record-batch, arrow-error>;
-
-    /// ========== Arrow-Row Operations ==========
-
-    /// Get distinct rows based on specified columns (efficient using row format)
-    row-distinct: func(
-        batch: borrow<record-batch>,
-        columns: list<string>
-    ) -> result<record-batch, arrow-error>;
-
-    /// Remove duplicate rows preserving first occurrence (efficient using row format)
-    row-deduplicate: func(
-        batch: borrow<record-batch>,
-        columns: list<string>
-    ) -> result<record-batch, arrow-error>;
-
-    /// ========== Additional Statistics ==========
-
-    /// Mode (most frequent value) - returns array of mode values
-    mode: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Quantile at specified probability (0.0 to 1.0)
-    quantile: func(arr: borrow<array>, q: f64) -> result<option<f64>, arrow-error>;
-
-    /// Multiple quantiles at once
-    quantiles: func(arr: borrow<array>, qs: list<f64>) -> result<list<option<f64>>, arrow-error>;
-
-    /// Interquartile range (Q3 - Q1)
-    iqr: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Skewness (measure of asymmetry)
-    skewness: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Kurtosis (measure of tailedness)
-    kurtosis: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Covariance between two arrays
-    covariance: func(x: borrow<array>, y: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Pearson correlation coefficient between two arrays
-    correlation: func(x: borrow<array>, y: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// ========== Extended Statistical Functions ==========
-
-    /// Index of maximum value (argmax), returns None if array is empty
-    index-of-max: func(arr: borrow<array>) -> result<option<u64>, arrow-error>;
-
-    /// Index of minimum value (argmin), returns None if array is empty
-    index-of-min: func(arr: borrow<array>) -> result<option<u64>, arrow-error>;
-
-    /// Check if array values are monotonically increasing
-    is-monotonic-increasing: func(arr: borrow<array>) -> result<bool, arrow-error>;
-
-    /// Check if array values are monotonically decreasing
-    is-monotonic-decreasing: func(arr: borrow<array>) -> result<bool, arrow-error>;
-
-    /// Get top N values (largest values, sorted descending)
-    top-n: func(arr: borrow<array>, n: u64) -> result<array, arrow-error>;
-
-    /// Get bottom N values (smallest values, sorted ascending)
-    bottom-n: func(arr: borrow<array>, n: u64) -> result<array, arrow-error>;
-
-    /// Get indices of top N values
-    top-n-indices: func(arr: borrow<array>, n: u64) -> result<array, arrow-error>;
-
-    /// Get indices of bottom N values
-    bottom-n-indices: func(arr: borrow<array>, n: u64) -> result<array, arrow-error>;
-
-    /// Shannon entropy of value distribution (in bits)
-    entropy: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Create histogram with specified number of bins
-    /// Returns record batch with columns: bin_min, bin_max, count
-    histogram: func(arr: borrow<array>, bins: u32) -> result<record-batch, arrow-error>;
-
-    /// Options for rolling/moving window calculations
-    record rolling-options {
-        /// Size of the rolling window
-        window-size: u64,
-        /// Minimum number of values required in window (defaults to window-size)
-        min-periods: option<u64>,
-        /// Center the window labels
-        center: bool,
-    }
-
-    /// Rolling sum
-    rolling-sum: func(arr: borrow<array>, options: rolling-options) -> result<array, arrow-error>;
-
-    /// Rolling mean
-    rolling-mean: func(arr: borrow<array>, options: rolling-options) -> result<array, arrow-error>;
-
-    /// Rolling minimum
-    rolling-min: func(arr: borrow<array>, options: rolling-options) -> result<array, arrow-error>;
-
-    /// Rolling maximum
-    rolling-max: func(arr: borrow<array>, options: rolling-options) -> result<array, arrow-error>;
-
-    /// Rolling standard deviation
-    rolling-std: func(arr: borrow<array>, options: rolling-options) -> result<array, arrow-error>;
-
-    /// ========== Cumulative/Scan Operations ==========
-
-    /// Cumulative sum (running total)
-    cumulative-sum: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Cumulative product (running product)
-    cumulative-prod: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Cumulative minimum (running minimum)
-    cumulative-min: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Cumulative maximum (running maximum)
-    cumulative-max: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Cumulative count (running count of non-null values)
-    cumulative-count: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== String Distance Functions ==========
-
-    /// Levenshtein edit distance between pairs of strings
-    /// Returns array of distances for each pair
-    levenshtein: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Levenshtein distance between a string array and a single pattern
-    levenshtein-scalar: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
-
-    /// Jaro similarity score (0.0 to 1.0) between pairs of strings
-    jaro: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Jaro similarity against a single pattern
-    jaro-scalar: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
-
-    /// Jaro-Winkler similarity score (0.0 to 1.0) between pairs of strings
-    jaro-winkler: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Jaro-Winkler similarity against a single pattern
-    jaro-winkler-scalar: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
-
-    /// Soundex phonetic algorithm - returns soundex code for each string
-    soundex: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Advanced Phonetic Algorithms ==========
-
-    /// Phonetic algorithm variants
-    enum phonetic-algorithm {
-        /// Original Soundex
-        soundex,
-        /// Refined Soundex (more precise)
-        refined-soundex,
-        /// Metaphone algorithm
-        metaphone,
-        /// Double Metaphone (primary encoding)
-        double-metaphone,
-        /// Double Metaphone (alternate encoding)
-        double-metaphone-alt,
-        /// NYSIIS (New York State Identification and Intelligence System)
-        nysiis,
-        /// Cologne phonetic (German names)
-        cologne,
-    }
-
-    /// Encode strings using specified phonetic algorithm
-    phonetic-encode: func(arr: borrow<array>, algorithm: phonetic-algorithm) -> result<array, arrow-error>;
-
-    /// Compare strings using phonetic similarity (returns true if phonetic codes match)
-    phonetic-match: func(left: borrow<array>, right: borrow<array>, algorithm: phonetic-algorithm) -> result<array, arrow-error>;
-
-    /// Hamming distance (number of positions with different characters)
-    /// Requires strings of equal length
-    hamming: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Hamming distance against a single pattern
-    hamming-scalar: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
-
-    /// Damerau-Levenshtein distance (allows transpositions)
-    damerau-levenshtein: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Damerau-Levenshtein distance against a single pattern
-    damerau-levenshtein-scalar: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
-
-    /// Longest common subsequence length
-    lcs-length: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Longest common subsequence length against a single pattern
-    lcs-length-scalar: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
-
-    /// Normalized Levenshtein distance (0.0 to 1.0, where 0.0 is identical)
-    normalized-levenshtein: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Normalized Levenshtein distance against a single pattern
-    normalized-levenshtein-scalar: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
-
-    /// ========== Array Operations ==========
-
-    /// Concatenate multiple arrays into one
-    concat: func(arrays: list<array>) -> result<array, arrow-error>;
-
-    /// Concatenate multiple record batches into one
-    concat-batches: func(batches: list<record-batch>) -> result<record-batch, arrow-error>;
-
-    /// Interleave arrays based on indices (merge arrays by selecting elements)
-    interleave: func(arrays: list<array>, indices: list<tuple<u32, u32>>) -> result<array, arrow-error>;
-
-    /// Reverse an array (flip element order)
-    reverse: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Repeat array elements n times (tile the array)
-    repeat: func(arr: borrow<array>, count: u64) -> result<array, arrow-error>;
-
-    /// ========== Partitioning Operations ==========
-
-    /// Partition data into groups of consecutive equal values
-    /// Returns list of (start, length) pairs for each partition
-    partition: func(arrays: list<array>) -> result<list<tuple<u64, u64>>, arrow-error>;
-
-    /// Compute rank of each value in an array
-    rank: func(arr: borrow<array>, options: sort-options) -> result<array, arrow-error>;
-
-    /// Unique/distinct operations
-
-    /// Get unique values
-    unique: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Get indices of first occurrence of each unique value
-    value-counts: func(arr: borrow<array>) -> result<record-batch, arrow-error>;
-
-    /// ========== Date/Time Operations ==========
-
-    /// Extract year from date/timestamp
-    date-year: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract month from date/timestamp (1-12)
-    date-month: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract day of month from date/timestamp (1-31)
-    date-day: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract day of week from date/timestamp (0=Sunday, 6=Saturday)
-    date-day-of-week: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract day of year from date/timestamp (1-366)
-    date-day-of-year: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract ISO week number from date/timestamp (1-53)
-    date-week: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract quarter from date/timestamp (1-4)
-    date-quarter: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract hour from time/timestamp (0-23)
-    time-hour: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract minute from time/timestamp (0-59)
-    time-minute: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract second from time/timestamp (0-59)
-    time-second: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract millisecond from time/timestamp (0-999)
-    time-millisecond: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract microsecond from time/timestamp (0-999999)
-    time-microsecond: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract nanosecond from time/timestamp (0-999999999)
-    time-nanosecond: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Add interval to date/timestamp
-    date-add-days: func(arr: borrow<array>, days: s32) -> result<array, arrow-error>;
-
-    /// Add months to date/timestamp
-    date-add-months: func(arr: borrow<array>, months: s32) -> result<array, arrow-error>;
-
-    /// Add years to date/timestamp
-    date-add-years: func(arr: borrow<array>, years: s32) -> result<array, arrow-error>;
-
-    /// Difference between two date/timestamp arrays in days
-    date-diff-days: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Truncate timestamp to specified unit
-    timestamp-truncate: func(arr: borrow<array>, unit: string) -> result<array, arrow-error>;
-
-    /// Convert timestamp to different timezone
-    timestamp-convert-tz: func(arr: borrow<array>, from-tz: option<string>, to-tz: string) -> result<array, arrow-error>;
-
-    /// Get epoch seconds from timestamp
-    timestamp-epoch-seconds: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Get epoch milliseconds from timestamp
-    timestamp-epoch-millis: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Create timestamp from epoch seconds
-    timestamp-from-epoch-seconds: func(arr: borrow<array>, timezone: option<string>) -> result<array, arrow-error>;
-
-    /// Create timestamp from epoch milliseconds
-    timestamp-from-epoch-millis: func(arr: borrow<array>, timezone: option<string>) -> result<array, arrow-error>;
-
-    /// Check if date falls on a weekend (Saturday or Sunday)
-    date-is-weekend: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if date is in a leap year
-    date-is-leap-year: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Get number of days in the month for each date
-    date-days-in-month: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Add interval to timestamp (months, days, and nanoseconds)
-    timestamp-add-interval: func(arr: borrow<array>, months: s32, days: s32, nanos: s64) -> result<array, arrow-error>;
-
-    /// Difference between timestamps in specified time unit
-    timestamp-diff: func(left: borrow<array>, right: borrow<array>, unit: time-unit) -> result<array, arrow-error>;
-
-    /// Create date from year, month, day arrays
-    make-date: func(year: borrow<array>, month: borrow<array>, day: borrow<array>) -> result<array, arrow-error>;
-
-    /// Create timestamp from date/time component arrays
-    make-timestamp: func(
-        year: borrow<array>,
-        month: borrow<array>,
-        day: borrow<array>,
-        hour: borrow<array>,
-        minute: borrow<array>,
-        second: borrow<array>,
-        timezone: option<string>
-    ) -> result<array, arrow-error>;
-
-    /// ========== Interval Operations ==========
-
-    /// Create interval from parts (months, days, nanoseconds)
-    make-interval-month-day-nano: func(months: borrow<array>, days: borrow<array>, nanos: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract months from interval
-    interval-months: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract days from interval
-    interval-days: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract nanoseconds from interval
-    interval-nanos: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Regex String Operations ==========
-
-    /// Check if string matches regex pattern
-    regex-match: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
-
-    /// Extract first regex match
-    regex-extract: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
-
-    /// Extract regex match with capture group
-    regex-extract-group: func(arr: borrow<array>, pattern: string, group: u32) -> result<array, arrow-error>;
-
-    /// Replace first regex match
-    regex-replace: func(arr: borrow<array>, pattern: string, replacement: string) -> result<array, arrow-error>;
-
-    /// Replace all regex matches
-    regex-replace-all: func(arr: borrow<array>, pattern: string, replacement: string) -> result<array, arrow-error>;
-
-    /// Count regex matches
-    regex-count: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
-
-    /// Split string by regex pattern
-    regex-split: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
-
-    /// ========== Base64 Operations ==========
-
-    /// Encode binary array to base64 string (standard encoding)
-    b64-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Decode base64 string array to binary
-    b64-decode: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Base64 alphabet variants
-    enum base64-alphabet {
-        /// Standard alphabet (RFC 4648)
-        standard,
-        /// URL-safe alphabet (RFC 4648 section 5)
-        url-safe,
-        /// Standard with no padding
-        standard-no-pad,
-        /// URL-safe with no padding
-        url-safe-no-pad,
-    }
-
-    /// Encode binary to base64 with alphabet choice
-    b64-encode-with-alphabet: func(arr: borrow<array>, alphabet: base64-alphabet) -> result<array, arrow-error>;
-
-    /// Decode base64 string with alphabet choice
-    b64-decode-with-alphabet: func(arr: borrow<array>, alphabet: base64-alphabet) -> result<array, arrow-error>;
-
-    /// ========== Window Functions ==========
-
-    /// Window function frame specification
-    record window-frame {
-        /// Start offset (negative = preceding, positive = following, 0 = current)
-        start-offset: s64,
-        /// End offset (negative = preceding, positive = following, 0 = current)
-        end-offset: s64,
-        /// Use unbounded start
-        unbounded-start: bool,
-        /// Use unbounded end
-        unbounded-end: bool,
-    }
-
-    /// Row number window function
-    window-row-number: func(partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>) -> result<array, arrow-error>;
-
-    /// Rank window function (with gaps)
-    window-rank: func(partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>) -> result<array, arrow-error>;
-
-    /// Dense rank window function (without gaps)
-    window-dense-rank: func(partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>) -> result<array, arrow-error>;
-
-    /// Percent rank window function
-    window-percent-rank: func(partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>) -> result<array, arrow-error>;
-
-    /// Cumulative distribution window function
-    window-cume-dist: func(partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>) -> result<array, arrow-error>;
-
-    /// N-tile window function
-    window-ntile: func(partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, n: u32) -> result<array, arrow-error>;
-
-    /// Lead window function (next row value)
-    window-lead: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, offset: u32, default-value: option<s64>) -> result<array, arrow-error>;
-
-    /// Lag window function (previous row value)
-    window-lag: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, offset: u32, default-value: option<s64>) -> result<array, arrow-error>;
-
-    /// First value in window
-    window-first-value: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
-
-    /// Last value in window
-    window-last-value: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
-
-    /// Nth value in window
-    window-nth-value: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, n: u32, frame: option<window-frame>) -> result<array, arrow-error>;
-
-    /// Running sum over window
-    window-sum: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
-
-    /// Running average over window
-    window-avg: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
-
-    /// Running min over window
-    window-min: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
-
-    /// Running max over window
-    window-max: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
-
-    /// Running count over window
-    window-count: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
-
-    /// Running mean over window
-    window-mean: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
-
-    /// Running variance (sample) over window
-    window-variance: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
-
-    /// Running standard deviation (sample) over window
-    window-stddev: func(arr: borrow<array>, partition-by: list<array>, order-by: list<array>, order-options: list<sort-options>, frame: option<window-frame>) -> result<array, arrow-error>;
-
-    /// ========== Additional Aggregations ==========
-
-    /// Variance (sample)
-    variance: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Variance (population)
-    variance-pop: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Standard deviation (sample)
-    stddev: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Standard deviation (population)
-    stddev-pop: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Median
-    median: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Approximate percentile
-    percentile: func(arr: borrow<array>, percentile: f64) -> result<option<f64>, arrow-error>;
-
-    /// Boolean any (true if any value is true)
-    bool-any: func(arr: borrow<array>) -> result<bool, arrow-error>;
-
-    /// Boolean all (true if all values are true)
-    bool-all: func(arr: borrow<array>) -> result<bool, arrow-error>;
-
-    /// First non-null value
-    first-value: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Last non-null value
-    last-value: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Advanced Aggregations (Phase 10.5) ==========
-
-    /// Checked sum with overflow detection (returns error on overflow)
-    sum-checked-i64: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
-
-    /// Checked sum with overflow detection for 32-bit integers
-    sum-checked-i32: func(arr: borrow<array>) -> result<option<s32>, arrow-error>;
-
-    /// Product of all values (multiply all elements together)
-    product-i64: func(arr: borrow<array>) -> result<option<s64>, arrow-error>;
-
-    /// Product of all values (float)
-    product-f64: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Geometric mean (nth root of product of n values)
-    geometric-mean: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Harmonic mean (n / sum of reciprocals)
-    harmonic-mean: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Root mean square (sqrt of mean of squares)
-    rms: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Count distinct values (exact cardinality)
-    count-distinct: func(arr: borrow<array>) -> result<u64, arrow-error>;
-
-    /// Approximate count distinct using hash-based estimation
-    count-distinct-approx: func(arr: borrow<array>) -> result<u64, arrow-error>;
-
-    /// ========== Selection & Merge Operations ==========
-
-    /// Sort multiple arrays together, return first N (lexicographic)
-    lexsort-limit: func(arrays: list<array>, limit: u64, descending: list<bool>, nulls-first: list<bool>) -> result<list<array>, arrow-error>;
-
-    /// Partition data into groups of consecutive equal values
-    /// Returns list of (start_index, length) pairs
-    partition-ranges: func(arr: borrow<array>) -> result<list<tuple<u64, u64>>, arrow-error>;
-
-    /// Merge two sorted arrays into one sorted array
-    merge-sorted: func(left: borrow<array>, right: borrow<array>, descending: bool) -> result<array, arrow-error>;
-
-    /// Combine values from two arrays based on boolean mask
-    /// Where mask is true, take from left; where false, take from right
-    zip-select: func(mask: borrow<array>, left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Interval Arithmetic ==========
-
-    /// Add two interval arrays element-wise (MonthDayNano intervals)
-    interval-add: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Subtract two interval arrays element-wise (MonthDayNano intervals)
-    interval-subtract: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Multiply interval by a scalar factor
-    interval-multiply-scalar: func(arr: borrow<array>, factor: s64) -> result<array, arrow-error>;
-
-    /// Negate interval (reverse direction)
-    interval-negate: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if two interval arrays are equal element-wise
-    interval-eq: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if left interval is less than right element-wise
-    interval-lt: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if left interval is greater than right element-wise
-    interval-gt: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Array Sampling Operations ==========
-
-    /// Random sample of N elements from array
-    /// If N >= array length, returns all elements. Optional seed for reproducibility.
-    sample-n: func(arr: borrow<array>, n: u64, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// Random sample of fraction of array (0.0-1.0)
-    /// Optional seed for reproducibility.
-    sample-fraction: func(arr: borrow<array>, fraction: f64, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// Shuffle array elements randomly
-    /// Optional seed for reproducibility.
-    shuffle: func(arr: borrow<array>, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// ========== Extended GroupBy Operations ==========
-
-    /// Group by with HAVING filter (post-aggregation filter)
-    /// The having-column should be a boolean column in the aggregation result
-    group-by-having: func(
-        batch: borrow<record-batch>,
-        group-columns: list<u32>,
-        aggregates: list<aggregate-spec>,
-        having-column: string
-    ) -> result<record-batch, arrow-error>;
-
-    /// Filter aggregate - aggregate with predicate (SQL FILTER clause)
-    /// Only aggregates values where filter is true
-    filter-aggregate: func(
-        arr: borrow<array>,
-        function: agg-function,
-        filter: borrow<array>
-    ) -> result<array, arrow-error>;
-
-    /// ========== Date/Time Binning Operations ==========
-
-    /// Time bin unit for bucketing operations
-    enum time-bin-unit {
-        /// Second
-        second,
-        /// Minute
-        minute,
-        /// Hour
-        hour,
-        /// Day
-        day,
-        /// Week
-        week,
-        /// Month
-        month,
-        /// Quarter
-        quarter,
-        /// Year
+    /// Date/time part to extract
+    enum date-part {
         year,
+        quarter,
+        month,
+        week,
+        day,
+        day-of-week-sunday0,
+        day-of-week-monday0,
+        day-of-year,
+        hour,
+        minute,
+        second,
+        millisecond,
+        microsecond,
+        nanosecond,
     }
 
-    /// Bin timestamps to specified interval
-    /// For example, bin to 15-minute intervals or 1-hour intervals
-    timestamp-bin: func(
-        arr: borrow<array>,
-        bin-size: u32,
-        bin-unit: time-bin-unit,
-        origin: option<s64>
-    ) -> result<array, arrow-error>;
+    /// Extract date/time part from temporal array
+    extract-date-part: func(arr: borrow<array>, part: date-part) -> result<array, arrow-error>;
 
-    /// Bin dates to specified interval
-    date-bin: func(
-        arr: borrow<array>,
-        bin-size: u32,
-        bin-unit: time-bin-unit
-    ) -> result<array, arrow-error>;
+    // ========================================================================
+    // Cast Operations (arrow-cast)
+    // ========================================================================
 
-    /// Truncate timestamp/date to start of period (week, month, quarter, year)
-    date-trunc-to: func(
-        arr: borrow<array>,
-        unit: time-bin-unit
-    ) -> result<array, arrow-error>;
+    /// Cast array to different data type
+    cast: func(arr: borrow<array>, to-type: data-type) -> result<array, arrow-error>;
 
-    /// ========== Approximate Algorithms ==========
+    /// Check if cast is possible between types
+    can-cast: func(from-type: data-type, to-type: data-type) -> bool;
 
-    /// Create HyperLogLog++ sketch for cardinality estimation
-    /// Precision should be between 4 and 18 (default 14)
-    hll-create: func(arr: borrow<array>, precision: u8) -> result<list<u8>, arrow-error>;
+    // ========================================================================
+    // In-List Operations (arrow-ord)
+    // ========================================================================
 
-    /// Merge multiple HLL sketches
-    hll-merge: func(sketches: list<list<u8>>) -> result<list<u8>, arrow-error>;
+    /// Check if values are in list of i64 values
+    in-list-i64: func(arr: borrow<array>, values: list<s64>) -> result<array, arrow-error>;
 
-    /// Estimate cardinality from HLL sketch
-    hll-estimate: func(sketch: list<u8>) -> result<u64, arrow-error>;
+    /// Check if values are in list of strings
+    in-list-string: func(arr: borrow<array>, values: list<string>) -> result<array, arrow-error>;
 
-    /// Create Count-Min Sketch for frequency estimation
-    /// width: number of counters per row (larger = more accurate)
-    /// depth: number of hash functions (larger = lower collision probability)
-    cms-create: func(arr: borrow<array>, width: u32, depth: u32) -> result<list<u8>, arrow-error>;
+    // ========================================================================
+    // Utility Operations
+    // ========================================================================
 
-    /// Query frequency from Count-Min Sketch for i64 values
-    cms-query-i64: func(sketch: list<u8>, value: s64) -> result<u64, arrow-error>;
+    /// Count non-null values
+    count: func(arr: borrow<array>) -> u64;
 
-    /// Query frequency from Count-Min Sketch for string values
-    cms-query-string: func(sketch: list<u8>, value: string) -> result<u64, arrow-error>;
+    /// Count null values
+    null-count: func(arr: borrow<array>) -> u64;
 
-    /// Find top-k most frequent elements in array
-    topk-frequent: func(arr: borrow<array>, k: u32) -> result<array, arrow-error>;
+    /// Get array length
+    len: func(arr: borrow<array>) -> u64;
 
-    /// ========== Rolling Window Extensions ==========
-
-    /// Exponential moving average (EMA)
-    /// alpha is the smoothing factor (0.0-1.0): result[i] = alpha * value[i] + (1-alpha) * result[i-1]
-    rolling-ema: func(arr: borrow<array>, alpha: f64) -> result<array, arrow-error>;
-
-    /// Weighted moving average with custom weights
-    /// weights are applied in order [w_0, w_1, ... w_n-1] where w_n-1 applies to current value
-    rolling-weighted-mean: func(arr: borrow<array>, weights: list<f64>) -> result<array, arrow-error>;
-
-    /// Bollinger bands: returns (lower-band, middle-band, upper-band)
-    /// middle-band is rolling mean, lower/upper are mean +/- (num-std * stddev)
-    bollinger-bands: func(
-        arr: borrow<array>,
-        window: u64,
-        num-std: f64
-    ) -> result<tuple<array, array, array>, arrow-error>;
-
-    /// Rate of change as percentage: (current - prev) / prev * 100
-    rate-of-change: func(arr: borrow<array>, periods: u64) -> result<array, arrow-error>;
-
-    /// Momentum: difference from N periods ago (current - prev)
-    momentum: func(arr: borrow<array>, periods: u64) -> result<array, arrow-error>;
-
-    /// ========== String Fuzzy Matching ==========
-
-    /// Levenshtein edit distance between two string arrays (element-wise)
-    string-levenshtein: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Jaro-Winkler similarity between two string arrays (0.0-1.0, element-wise)
-    string-jaro-winkler: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Soundex phonetic encoding
-    string-soundex: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// N-gram tokenization - returns List<Utf8> array of n-grams per string
-    string-ngrams: func(arr: borrow<array>, n: u32) -> result<array, arrow-error>;
-
-    /// Fuzzy match: returns indices of strings that match pattern within threshold
-    /// algorithm: "levenshtein" or "jaro-winkler"
-    /// threshold: max distance for levenshtein, min similarity for jaro-winkler
-    string-fuzzy-match: func(
-        arr: borrow<array>,
-        pattern: string,
-        threshold: f64,
-        algorithm: string
-    ) -> result<array, arrow-error>;
-
-    /// ========== Geospatial Basics ==========
-
-    /// Haversine distance between lat/lon points (in meters)
-    geo-haversine-distance: func(
-        lat1: borrow<array>,
-        lon1: borrow<array>,
-        lat2: borrow<array>,
-        lon2: borrow<array>
-    ) -> result<array, arrow-error>;
-
-    /// Check if points are within radius of reference point (returns boolean array)
-    geo-within-radius: func(
-        lat: borrow<array>,
-        lon: borrow<array>,
-        ref-lat: f64,
-        ref-lon: f64,
-        radius-meters: f64
-    ) -> result<array, arrow-error>;
-
-    /// Bounding box filter (returns boolean array)
-    geo-in-bbox: func(
-        lat: borrow<array>,
-        lon: borrow<array>,
-        min-lat: f64,
-        min-lon: f64,
-        max-lat: f64,
-        max-lon: f64
-    ) -> result<array, arrow-error>;
-
-    /// Grid cell assignment (geohash-like, returns string array)
-    /// precision: 1-12, higher = more precise (smaller cells)
-    geo-grid-cell: func(
-        lat: borrow<array>,
-        lon: borrow<array>,
-        precision: u8
-    ) -> result<array, arrow-error>;
-
-    /// ========== Data Quality & Validation (Phase 15.1) ==========
-
-    /// Data profile statistics for a column
-    record column-profile {
-        /// Column name
-        name: string,
-        /// Total count
-        count: u64,
-        /// Null count
-        null-count: u64,
-        /// Distinct count (approximate)
-        distinct-count: u64,
-        /// Completeness ratio (1.0 - null_ratio)
-        completeness: f64,
-        /// For numeric: min value as string
-        min-value: option<string>,
-        /// For numeric: max value as string
-        max-value: option<string>,
-        /// For numeric: mean
-        mean: option<f64>,
-        /// For numeric: standard deviation
-        stddev: option<f64>,
-    }
-
-    /// Profile a single column
-    profile-column: func(arr: borrow<array>, name: string) -> result<column-profile, arrow-error>;
-
-    /// Profile all columns in a record batch
-    profile-batch: func(batch: borrow<record-batch>) -> result<list<column-profile>, arrow-error>;
-
-    /// Check if values match a regex pattern, returns match ratio
-    pattern-match-ratio: func(arr: borrow<array>, pattern: string) -> result<f64, arrow-error>;
-
-    /// Check for duplicate rows in a batch
-    duplicate-count: func(batch: borrow<record-batch>, columns: list<string>) -> result<u64, arrow-error>;
-
-    /// Get indices of duplicate rows
-    duplicate-indices: func(batch: borrow<record-batch>, columns: list<string>) -> result<array, arrow-error>;
-
-    /// ========== Statistical Hypothesis Testing (Phase 15.2) ==========
-
-    /// Result of a statistical test
-    record test-result {
-        /// Test statistic value
-        statistic: f64,
-        /// P-value
-        p-value: f64,
-        /// Degrees of freedom (if applicable)
-        degrees-of-freedom: option<f64>,
-    }
-
-    /// One-sample t-test (test if mean equals hypothesized value)
-    t-test-one-sample: func(arr: borrow<array>, hypothesized-mean: f64) -> result<test-result, arrow-error>;
-
-    /// Two-sample t-test (independent samples)
-    t-test-two-sample: func(arr1: borrow<array>, arr2: borrow<array>, equal-variance: bool) -> result<test-result, arrow-error>;
-
-    /// Paired t-test
-    t-test-paired: func(arr1: borrow<array>, arr2: borrow<array>) -> result<test-result, arrow-error>;
-
-    /// Chi-square goodness of fit test
-    chi-square-test: func(observed: borrow<array>, expected: borrow<array>) -> result<test-result, arrow-error>;
-
-    /// Mann-Whitney U test (non-parametric)
-    mann-whitney-test: func(arr1: borrow<array>, arr2: borrow<array>) -> result<test-result, arrow-error>;
-
-    /// ========== Outlier Detection (Phase 15.3) ==========
-
-    /// Outlier detection method
-    enum outlier-method {
-        /// Interquartile range method (1.5 * IQR)
-        iqr,
-        /// Z-score method (default threshold 3.0)
-        z-score,
-        /// Modified Z-score using MAD
-        modified-z-score,
-    }
-
-    /// Outlier detection options
-    record outlier-options {
-        /// Detection method
-        method: outlier-method,
-        /// Threshold for z-score methods (default 3.0)
-        threshold: option<f64>,
-    }
-
-    /// Detect outliers, returns boolean mask
-    detect-outliers: func(arr: borrow<array>, options: outlier-options) -> result<array, arrow-error>;
-
-    /// Count outliers
-    count-outliers: func(arr: borrow<array>, options: outlier-options) -> result<u64, arrow-error>;
-
-    /// Get outlier indices
-    outlier-indices: func(arr: borrow<array>, options: outlier-options) -> result<array, arrow-error>;
-
-    /// Remove outliers from array
-    remove-outliers: func(arr: borrow<array>, options: outlier-options) -> result<array, arrow-error>;
-
-    /// Cap outliers (winsorize) - replace with boundary values
-    cap-outliers: func(arr: borrow<array>, options: outlier-options) -> result<array, arrow-error>;
-
-    /// ========== Correlation & Covariance (Phase 15.4) ==========
-
-    /// Correlation method
-    enum correlation-method {
-        /// Pearson correlation coefficient
-        pearson,
-        /// Spearman rank correlation
-        spearman,
-    }
-
-    /// Compute correlation between two arrays with method selection
-    correlation-with-method: func(arr1: borrow<array>, arr2: borrow<array>, method: correlation-method) -> result<f64, arrow-error>;
-
-    /// Compute correlation matrix for multiple columns
-    correlation-matrix: func(
-        batch: borrow<record-batch>,
-        columns: list<string>,
-        method: correlation-method
-    ) -> result<record-batch, arrow-error>;
-
-    /// Cross-tabulation (contingency table)
-    cross-tabulate: func(
-        arr1: borrow<array>,
-        arr2: borrow<array>
-    ) -> result<record-batch, arrow-error>;
-
-    /// ========== Advanced Encoding (Phase 15.5) ==========
-
-    /// Delta encode an integer array (store differences)
-    delta-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Delta decode an integer array
-    delta-decode: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Zigzag encode signed integers to unsigned (for better compression)
-    zigzag-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Zigzag decode unsigned back to signed
-    zigzag-decode: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Time Series Analysis (Phase 15.6) ==========
-
-    /// Create lagged version of array (shift by n positions)
-    ts-lag: func(arr: borrow<array>, periods: u32) -> result<array, arrow-error>;
-
-    /// Create lead version of array (shift forward by n positions)
-    ts-lead: func(arr: borrow<array>, periods: u32) -> result<array, arrow-error>;
-
-    /// Compute autocorrelation at given lag
-    autocorrelation: func(arr: borrow<array>, lag: u32) -> result<f64, arrow-error>;
-
-    /// Compute autocorrelation for multiple lags
-    autocorrelation-series: func(arr: borrow<array>, max-lag: u32) -> result<array, arrow-error>;
-
-    /// Compute percent change between consecutive values
-    pct-change: func(arr: borrow<array>, periods: u32) -> result<array, arrow-error>;
-
-    /// Compute cumulative product
-    cumprod: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Feature Engineering (Phase 15.7) ==========
-
-    /// Normalize array to 0-1 range (min-max scaling)
-    normalize-min-max: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Standardize array to mean=0, std=1 (z-score normalization)
-    standardize: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Robust scaling using median and IQR
-    robust-scale: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Log transform (natural log, adds 1 to handle zeros)
-    log-transform: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Rank transform (convert to ranks, 1-based)
-    rank-transform: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Missing Data Interpolation (Phase 16.1) ==========
-
-    /// Interpolation method
-    enum interpolation-method {
-        /// Linear interpolation
-        linear,
-        /// Nearest neighbor
-        nearest,
-        /// Forward fill (LOCF)
-        forward,
-        /// Backward fill (NOCB)
-        backward,
-    }
-
-    /// Interpolate missing values in array
-    interpolate: func(arr: borrow<array>, method: interpolation-method, limit: option<u32>) -> result<array, arrow-error>;
-
-    /// Interpolate with constant fill value
-    interpolate-constant: func(arr: borrow<array>, value: f64) -> result<array, arrow-error>;
-
-    /// Detect missing value runs (returns start, length pairs)
-    missing-runs: func(arr: borrow<array>) -> result<list<tuple<u64, u64>>, arrow-error>;
-
-    /// Count consecutive missing values at each position
-    missing-streak: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Pivot/Unpivot Operations (Phase 16.2) ==========
-
-    /// Pivot a table (long to wide format)
-    pivot: func(
-        batch: borrow<record-batch>,
-        index-columns: list<string>,
-        pivot-column: string,
-        value-column: string,
-        agg-function: agg-function
-    ) -> result<record-batch, arrow-error>;
-
-    /// Unpivot/melt a table (wide to long format)
-    unpivot: func(
-        batch: borrow<record-batch>,
-        id-columns: list<string>,
-        value-columns: list<string>,
-        var-name: string,
-        value-name: string
-    ) -> result<record-batch, arrow-error>;
-
-    /// ========== Hashing Functions (Phase 16.3) ==========
-
-    /// Hash algorithm
-    enum hash-algorithm {
-        /// MD5 (128-bit)
-        md5,
-        /// SHA-256 (256-bit)
-        sha256,
-        /// CRC32 checksum
-        crc32,
-        /// Fast non-crypto hash
-        fnv1a,
-    }
-
-    /// Hash string array to hex strings
-    hash-strings: func(arr: borrow<array>, algorithm: hash-algorithm) -> result<array, arrow-error>;
-
-    /// Compute row-level hash for record batch
-    hash-rows: func(batch: borrow<record-batch>, columns: list<string>, algorithm: hash-algorithm) -> result<array, arrow-error>;
-
-    /// ========== Data Masking (Phase 16.4) ==========
-
-    /// Mask string values with character replacement
-    mask-string: func(arr: borrow<array>, mask-char: string, keep-first: u32, keep-last: u32) -> result<array, arrow-error>;
-
-    /// Mask email addresses (show first char and domain)
-    mask-email: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Generalize numeric values to ranges (k-anonymity helper)
-    generalize-numeric: func(arr: borrow<array>, bin-size: f64) -> result<array, arrow-error>;
-
-    /// Add Laplace noise for differential privacy
-    add-noise-laplace: func(arr: borrow<array>, epsilon: f64, sensitivity: f64, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// ========== Advanced Sampling (Phase 16.5) ==========
-
-    /// Stratified sample - sample from each stratum proportionally
-    stratified-sample: func(
-        batch: borrow<record-batch>,
-        stratum-column: string,
-        sample-fraction: f64,
-        seed: option<u64>
-    ) -> result<record-batch, arrow-error>;
-
-    /// Weighted random sample
-    weighted-sample: func(
-        arr: borrow<array>,
-        weights: borrow<array>,
-        n: u64,
-        seed: option<u64>
-    ) -> result<array, arrow-error>;
-
-    /// Systematic sample (every nth element with random start)
-    systematic-sample: func(arr: borrow<array>, interval: u32, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// Reservoir sample (streaming-friendly)
-    reservoir-sample: func(arr: borrow<array>, k: u64, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// Bootstrap sample (sample with replacement)
-    bootstrap-sample: func(arr: borrow<array>, n: u64, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// ========== Fuzzy String Operations (Phase 16.6) ==========
-
-    /// Fuzzy deduplication - remove near-duplicate strings
-    fuzzy-dedup: func(
-        arr: borrow<array>,
-        threshold: f64,
-        algorithm: string,
-        keep-first: bool
-    ) -> result<array, arrow-error>;
-
-    /// Fuzzy group assignment - assign group IDs to similar strings
-    fuzzy-group: func(
-        arr: borrow<array>,
-        threshold: f64,
-        algorithm: string
-    ) -> result<array, arrow-error>;
-
-    /// Phonetic grouping - group by phonetic encoding
-    phonetic-group: func(arr: borrow<array>, algorithm: phonetic-algorithm) -> result<array, arrow-error>;
-
-    /// ========== Sequence Operations (Phase 16.7) ==========
-
-    /// Detect runs of consecutive equal values
-    detect-runs: func(arr: borrow<array>) -> result<record-batch, arrow-error>;
-
-    /// Compute run lengths for each position
-    run-lengths: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Find gaps in monotonic sequence
-    sequence-gaps: func(arr: borrow<array>, expected-diff: f64) -> result<array, arrow-error>;
-
-    /// Compute consecutive differences
-    consecutive-diff: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Struct/Nested Data Operations (Phase 17.1) ==========
-
-    /// Extract a field from a struct array
-    struct-field: func(arr: borrow<array>, field-name: string) -> result<array, arrow-error>;
-
-    /// Get all field names from a struct array
-    struct-field-names: func(arr: borrow<array>) -> result<list<string>, arrow-error>;
-
-    /// Flatten a struct array into separate columns in a record batch
-    struct-flatten: func(arr: borrow<array>, prefix: option<string>) -> result<record-batch, arrow-error>;
-
-    /// Create a struct array from multiple arrays
-    struct-from-arrays: func(arrays: list<borrow<array>>, names: list<string>) -> result<array, arrow-error>;
-
-    /// ========== JSON Operations (Phase 17.2) ==========
-
-    /// Extract a value from JSON strings using path syntax (e.g., "field.nested")
-    json-extract: func(arr: borrow<array>, path: string) -> result<array, arrow-error>;
-
-    /// Convert array to JSON strings
-    to-json-strings: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if strings are valid JSON
-    is-valid-json: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Array Slicing & Manipulation (Phase 17.3) ==========
-
-    /// Slice array elements (like Python slicing with start:stop:step)
-    array-slice: func(arr: borrow<array>, start: option<s64>, stop: option<s64>, step: option<s64>) -> result<array, arrow-error>;
-
-    /// Concatenate multiple arrays vertically
-    array-concat: func(arrays: list<borrow<array>>) -> result<array, arrow-error>;
-
-    /// Repeat array elements n times
-    array-repeat: func(arr: borrow<array>, n: u32) -> result<array, arrow-error>;
-
-    /// Interleave multiple arrays element by element
-    array-interleave: func(arrays: list<borrow<array>>) -> result<array, arrow-error>;
-
-    /// Flatten nested list array by one level
-    list-flatten: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Get unique values preserving first occurrence order
-    array-unique-ordered: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Data Sketches (Phase 17.4) ==========
-
-    /// Estimate cardinality using HyperLogLog
-    hyperloglog-count: func(arr: borrow<array>, precision: option<u8>) -> result<u64, arrow-error>;
-
-    /// Create HyperLogLog sketch as binary
-    hyperloglog-sketch: func(arr: borrow<array>, precision: option<u8>) -> result<list<u8>, arrow-error>;
-
-    /// Merge HyperLogLog sketches
-    hyperloglog-merge: func(sketches: list<list<u8>>) -> result<list<u8>, arrow-error>;
-
-    /// Estimate count from HyperLogLog sketch
-    hyperloglog-estimate: func(sketch: list<u8>) -> result<u64, arrow-error>;
-
-    /// Create Bloom filter from array
-    bloom-filter-create: func(arr: borrow<array>, expected-items: u64, false-positive-rate: f64) -> result<list<u8>, arrow-error>;
-
-    /// Check membership in Bloom filter
-    bloom-filter-contains: func(filter: list<u8>, arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Merge Bloom filters (must have same size)
-    bloom-filter-merge: func(filters: list<list<u8>>) -> result<list<u8>, arrow-error>;
-
-    /// ========== Hex & Binary Operations (Phase 17.5) ==========
-
-    /// Encode binary to hex string
-    hex-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Decode hex string to binary
-    hex-decode: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// XOR two binary arrays element-wise
-    binary-xor: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Count set bits (population count) in integer array
-    popcount: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Reverse bits in integer array
-    bit-reverse: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Count leading zeros in integer array
-    leading-zeros: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Count trailing zeros in integer array
-    trailing-zeros: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Geographic Distance (Phase 17.6) ==========
-
-    /// Haversine distance between lat/lon pairs in kilometers
-    haversine-distance: func(lat1: borrow<array>, lon1: borrow<array>, lat2: borrow<array>, lon2: borrow<array>) -> result<array, arrow-error>;
-
-    /// Haversine distance from a single point to array of points
-    haversine-distance-from-point: func(lat: f64, lon: f64, lats: borrow<array>, lons: borrow<array>) -> result<array, arrow-error>;
-
-    /// Bearing between two points in degrees (0=North, 90=East)
-    bearing: func(lat1: borrow<array>, lon1: borrow<array>, lat2: borrow<array>, lon2: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if points are within radius of a center point
-    points-within-radius: func(center-lat: f64, center-lon: f64, lats: borrow<array>, lons: borrow<array>, radius-km: f64) -> result<array, arrow-error>;
-
-    /// ========== Data Integrity & Checksums (Phase 17.7) ==========
-
-    /// Compute Adler-32 checksum for string/binary array
-    adler32: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Compute XXHash64 (fast non-crypto hash)
-    xxhash64: func(arr: borrow<array>, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// Verify array has no duplicate values
-    verify-unique: func(arr: borrow<array>) -> result<bool, arrow-error>;
-
-    /// Verify array is sorted
-    verify-sorted: func(arr: borrow<array>, ascending: bool) -> result<bool, arrow-error>;
-
-    /// Verify array values are within range
-    verify-range: func(arr: borrow<array>, min: f64, max: f64) -> result<bool, arrow-error>;
-
-    /// Count constraint violations (nulls, out of range, duplicates)
-    count-violations: func(arr: borrow<array>, allow-nulls: bool, min: option<f64>, max: option<f64>) -> result<u64, arrow-error>;
-
-    /// ========== Record Batch Set Operations (Phase 18.1) ==========
-
-    /// Union two record batches (concatenate rows, must have same schema)
-    batch-union: func(left: borrow<record-batch>, right: borrow<record-batch>) -> result<record-batch, arrow-error>;
-
-    /// Union multiple record batches
-    batch-union-all: func(batches: list<borrow<record-batch>>) -> result<record-batch, arrow-error>;
-
-    /// Intersect two batches (rows in both, based on specified columns)
-    batch-intersect: func(left: borrow<record-batch>, right: borrow<record-batch>, columns: list<string>) -> result<record-batch, arrow-error>;
-
-    /// Except/difference (rows in left but not in right)
-    batch-except: func(left: borrow<record-batch>, right: borrow<record-batch>, columns: list<string>) -> result<record-batch, arrow-error>;
-
-    /// Distinct rows in batch based on columns
-    batch-distinct: func(batch: borrow<record-batch>, columns: list<string>) -> result<record-batch, arrow-error>;
-
-    /// ========== Text Tokenization (Phase 18.2) ==========
-
-    /// Split strings into word tokens (returns list array)
-    tokenize-words: func(arr: borrow<array>, lowercase: bool) -> result<array, arrow-error>;
-
-    /// Generate word n-grams from strings
-    ngrams: func(arr: borrow<array>, n: u32) -> result<array, arrow-error>;
-
-    /// Generate character n-grams
-    char-ngrams: func(arr: borrow<array>, n: u32) -> result<array, arrow-error>;
-
-    /// Count words in each string
-    word-count: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract sentences from text
-    sentence-split: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Remove stopwords from tokenized text (list of strings)
-    remove-stopwords: func(arr: borrow<array>, stopwords: list<string>) -> result<array, arrow-error>;
-
-    /// ========== Batch Column Operations (Phase 18.3) ==========
-
-    /// Add a column to a record batch
-    batch-add-column: func(batch: borrow<record-batch>, name: string, column: borrow<array>) -> result<record-batch, arrow-error>;
-
-    /// Replace a column in a record batch
-    batch-replace-column: func(batch: borrow<record-batch>, name: string, column: borrow<array>) -> result<record-batch, arrow-error>;
-
-    /// Rename columns in a batch
-    batch-rename-columns: func(batch: borrow<record-batch>, old-names: list<string>, new-names: list<string>) -> result<record-batch, arrow-error>;
-
-    /// Reorder columns in a batch
-    batch-reorder-columns: func(batch: borrow<record-batch>, column-order: list<string>) -> result<record-batch, arrow-error>;
-
-    /// Drop columns from a batch
-    batch-drop-columns: func(batch: borrow<record-batch>, columns: list<string>) -> result<record-batch, arrow-error>;
-
-    /// Select columns from a batch by name
-    batch-select-columns: func(batch: borrow<record-batch>, columns: list<string>) -> result<record-batch, arrow-error>;
-
-    /// ========== Data Partitioning (Phase 18.4) ==========
-
-    /// Hash partition a batch into N partitions
-    hash-partition: func(batch: borrow<record-batch>, columns: list<string>, num-partitions: u32) -> result<list<record-batch>, arrow-error>;
-
-    /// Range partition based on column values
-    range-partition: func(batch: borrow<record-batch>, column: string, boundaries: list<f64>) -> result<list<record-batch>, arrow-error>;
-
-    /// Round-robin partition
-    round-robin-partition: func(batch: borrow<record-batch>, num-partitions: u32) -> result<list<record-batch>, arrow-error>;
-
-    /// Get partition assignment for each row (returns partition index array)
-    partition-indices: func(batch: borrow<record-batch>, columns: list<string>, num-partitions: u32) -> result<array, arrow-error>;
-
-    /// ========== Vector/Math Operations (Phase 18.5) ==========
-
-    /// Dot product of two arrays
-    dot-product: func(left: borrow<array>, right: borrow<array>) -> result<f64, arrow-error>;
-
-    /// L1 norm (sum of absolute values)
-    l1-norm: func(arr: borrow<array>) -> result<f64, arrow-error>;
-
-    /// L2 norm (Euclidean norm)
-    l2-norm: func(arr: borrow<array>) -> result<f64, arrow-error>;
-
-    /// Cosine similarity between two arrays
-    cosine-similarity: func(left: borrow<array>, right: borrow<array>) -> result<f64, arrow-error>;
-
-    /// Euclidean distance between two arrays
-    euclidean-distance: func(left: borrow<array>, right: borrow<array>) -> result<f64, arrow-error>;
-
-    /// Manhattan distance between two arrays
-    manhattan-distance: func(left: borrow<array>, right: borrow<array>) -> result<f64, arrow-error>;
-
-    /// Normalize array to unit vector (L2)
-    normalize-l2: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Element-wise power
-    power: func(arr: borrow<array>, exponent: f64) -> result<array, arrow-error>;
-
-    /// ========== Running Aggregations (Phase 18.6) ==========
-
-    /// Running/expanding minimum
-    running-min: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Running/expanding maximum
-    running-max: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Running/expanding mean
-    running-mean: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Running/expanding standard deviation
-    running-stddev: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Running/expanding count (non-null)
-    running-count: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Running product
-    running-product: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Array Comparison Operations (Phase 18.7) ==========
-
-    /// Check if two arrays are equal element-wise (returns boolean array)
-    arrays-equal: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if all elements are equal between arrays
-    arrays-all-equal: func(left: borrow<array>, right: borrow<array>) -> result<bool, arrow-error>;
-
-    /// Check if any elements are equal between arrays
-    arrays-any-equal: func(left: borrow<array>, right: borrow<array>) -> result<bool, arrow-error>;
-
-    /// Element-wise minimum of two arrays
-    element-min: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Element-wise maximum of two arrays
-    element-max: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Clip array values to min/max range
-    clip: func(arr: borrow<array>, min: option<f64>, max: option<f64>) -> result<array, arrow-error>;
-
-    /// ========== Date/Time Formatting (Phase 19.1) ==========
-
-    /// Format timestamp to string with format pattern (strftime-style)
-    timestamp-format: func(arr: borrow<array>, format: string) -> result<array, arrow-error>;
-
-    /// Format date to string with format pattern
-    date-format: func(arr: borrow<array>, format: string) -> result<array, arrow-error>;
-
-    /// Parse string to timestamp with format pattern
-    timestamp-parse: func(arr: borrow<array>, format: string) -> result<array, arrow-error>;
-
-    /// Parse string to date with format pattern
-    date-parse: func(arr: borrow<array>, format: string) -> result<array, arrow-error>;
-
-    /// Get timestamp component (year, month, day, hour, minute, second)
-    timestamp-component: func(arr: borrow<array>, component: string) -> result<array, arrow-error>;
-
-    /// ========== Conditional/Case Operations (Phase 19.2) ==========
-
-    /// Case-when with condition array and two result arrays
-    case-when: func(condition: borrow<array>, then-val: borrow<array>, else-val: borrow<array>) -> result<array, arrow-error>;
-
-    /// Decode - map values to results (like SQL DECODE)
-    decode: func(arr: borrow<array>, search-values: list<string>, result-values: list<string>, default-value: option<string>) -> result<array, arrow-error>;
-
-    /// ========== String Formatting (Phase 19.3) ==========
-
-    /// Format number to string with decimal places
-    format-number: func(arr: borrow<array>, decimal-places: u32) -> result<array, arrow-error>;
-
-    /// Format number with thousand separators
-    format-number-grouped: func(arr: borrow<array>, decimal-places: u32, group-sep: string, decimal-sep: string) -> result<array, arrow-error>;
-
-    /// Format number as currency
-    format-currency: func(arr: borrow<array>, symbol: string, decimal-places: u32) -> result<array, arrow-error>;
-
-    /// Format number as percentage
-    format-percent: func(arr: borrow<array>, decimal-places: u32) -> result<array, arrow-error>;
-
-    /// Pad string left to width
-    lpad: func(arr: borrow<array>, width: u32, pad-char: string) -> result<array, arrow-error>;
-
-    /// Pad string right to width
-    rpad: func(arr: borrow<array>, width: u32, pad-char: string) -> result<array, arrow-error>;
-
-    /// ========== Calendar Operations (Phase 19.4) ==========
-
-    /// Check if date is weekend
-    is-weekend: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if date is weekday
-    is-weekday: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Get day of week (0=Sunday, 6=Saturday)
-    day-of-week: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Get day of year (1-366)
-    day-of-year: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Get week of year (ISO week number)
-    week-of-year: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Get quarter (1-4)
-    quarter: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if year is leap year
-    is-leap-year: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Add business days (skip weekends)
-    add-business-days: func(arr: borrow<array>, days: s32) -> result<array, arrow-error>;
-
-    /// Count business days between dates
-    business-days-between: func(start-dates: borrow<array>, end-dates: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== URL/Encoding Operations (Phase 19.5) ==========
-
-    /// URL encode string (percent encoding)
-    url-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// URL decode string
-    url-decode: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// HTML entity encode
-    html-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// HTML entity decode
-    html-decode: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Escape special regex characters
-    regex-escape: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Quote string for SQL (escape single quotes)
-    sql-quote: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Array Element Statistics (Phase 19.7) ==========
-
-    /// Sum of elements in each list
-    list-sum: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Mean of elements in each list
-    list-mean: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Min of elements in each list
-    list-min: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Max of elements in each list
-    list-max: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Length of each list
-    list-length: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if list contains value
-    list-contains: func(arr: borrow<array>, value: string) -> result<array, arrow-error>;
-
-    /// Get first element of each list
-    list-first: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Get last element of each list
-    list-last: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Advanced Statistical Functions (Phase 20.1) ==========
-
-    /// Calculate weighted average
-    weighted-average: func(values: borrow<array>, weights: borrow<array>) -> result<f64, arrow-error>;
-
-    /// ========== Time Series Operations (Phase 20.2) ==========
-
-    /// Lag with default value for nulls
-    lag-default: func(arr: borrow<array>, offset: u32, default-val: f64) -> result<array, arrow-error>;
-
-    /// Lead with default value for nulls
-    lead-default: func(arr: borrow<array>, offset: u32, default-val: f64) -> result<array, arrow-error>;
-
-    /// Difference between consecutive elements
-    diff: func(arr: borrow<array>, periods: u32) -> result<array, arrow-error>;
-
-    /// Exponential moving average
-    ema: func(arr: borrow<array>, span: u32) -> result<array, arrow-error>;
-
-    /// Simple moving average
-    sma: func(arr: borrow<array>, window: u32) -> result<array, arrow-error>;
-
-    /// Forward fill then backward fill (fill all nulls)
-    fill-null-interpolate: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Phonetic Matching (Phase 20.3) ==========
-
-    /// Metaphone encoding for phonetic matching
-    metaphone: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Double Metaphone encoding (returns primary code)
-    double-metaphone: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// NYSIIS encoding for phonetic matching
-    nysiis: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if two strings match phonetically (Soundex)
-    soundex-match: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Array Manipulation (Phase 20.4) ==========
-
-    /// Rotate array elements by n positions
-    array-rotate: func(arr: borrow<array>, n: s32) -> result<array, arrow-error>;
-
-    /// Split array into chunks of size n (returns list array)
-    array-chunk: func(arr: borrow<array>, chunk-size: u32) -> result<array, arrow-error>;
-
-    /// Zip two arrays into list of pairs
-    array-zip: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Create array of indices where condition is true
-    where-indices: func(condition: borrow<array>) -> result<array, arrow-error>;
-
-    /// Compress array keeping only elements where mask is true
-    compress: func(arr: borrow<array>, mask: borrow<array>) -> result<array, arrow-error>;
-
-    /// Insert value at index
-    array-insert: func(arr: borrow<array>, index: u32, value: f64) -> result<array, arrow-error>;
-
-    /// Delete element at index
-    array-delete: func(arr: borrow<array>, index: u32) -> result<array, arrow-error>;
-
-    /// ========== Numeric Conversions (Phase 20.5) ==========
-
-    /// Convert integer to binary string
-    to-binary-string: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Convert integer to octal string
-    to-octal-string: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Parse binary string to integer
-    from-binary-string: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Parse octal string to integer
-    from-octal-string: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Convert degrees to radians
-    degrees-to-radians: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Convert radians to degrees
-    radians-to-degrees: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Data Quality Metrics (Phase 20.6) ==========
-
-    /// Calculate null ratio (null count / total count)
-    null-ratio: func(arr: borrow<array>) -> result<f64, arrow-error>;
-
-    /// Calculate uniqueness ratio (distinct count / total count)
-    uniqueness-ratio: func(arr: borrow<array>) -> result<f64, arrow-error>;
-
-    /// Calculate completeness (1 - null ratio)
-    completeness: func(arr: borrow<array>) -> result<f64, arrow-error>;
-
-    /// Count values outside of range
-    outlier-count: func(arr: borrow<array>, low: f64, high: f64) -> result<u64, arrow-error>;
-
-    /// Calculate coefficient of variation (stddev / mean)
-    coefficient-of-variation: func(arr: borrow<array>) -> result<f64, arrow-error>;
-
-    /// Count zero values
-    zero-count: func(arr: borrow<array>) -> result<u64, arrow-error>;
-
-    /// Count negative values
-    negative-count: func(arr: borrow<array>) -> result<u64, arrow-error>;
-
-    /// ========== String Pattern Operations (Phase 20.7) ==========
-
-    /// Extract all regex matches as list array
-    regex-extract-all: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
-
-    /// Check if string matches glob pattern
-    glob-match: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
-
-    /// Remove accents/diacritics from strings
-    remove-accents: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== One-Hot Encoding & Categorical Operations (Phase 21.1) ==========
-
-    /// One-hot encode a string/integer array (returns record batch with boolean columns)
-    one-hot-encode: func(arr: borrow<array>) -> result<record-batch, arrow-error>;
-
-    /// Label encode string array to integers (0, 1, 2, ...)
-    label-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Get label encoding mapping (returns string array of unique values in order)
-    label-encode-mapping: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Apply label encoding with existing mapping
-    label-encode-with-mapping: func(arr: borrow<array>, mapping: borrow<array>) -> result<array, arrow-error>;
-
-    /// Inverse label encode (integers back to strings)
-    label-decode: func(arr: borrow<array>, mapping: borrow<array>) -> result<array, arrow-error>;
-
-    /// Ordinal encode with specified order
-    ordinal-encode: func(arr: borrow<array>, order: list<string>) -> result<array, arrow-error>;
-
-    /// Count encode (replace categories with their frequencies)
-    count-encode: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Target encode (replace categories with mean of target variable)
-    target-encode: func(arr: borrow<array>, target: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Random Data Generation (Phase 21.3) ==========
-
-    /// Generate random uniform floats [0, 1)
-    random-uniform: func(n: u64, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// Generate random uniform floats in range [low, high)
-    random-uniform-range: func(n: u64, low: f64, high: f64, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// Generate random integers in range [low, high]
-    random-integers: func(n: u64, low: s64, high: s64, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// Generate random normal (Gaussian) distributed values
-    random-normal: func(n: u64, mean: f64, stddev: f64, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// Generate random exponential distributed values
-    random-exponential: func(n: u64, lambda: f64, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// Generate random choice from array (with replacement)
-    random-choice: func(arr: borrow<array>, n: u64, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// Generate random choice without replacement
-    random-choice-no-replace: func(arr: borrow<array>, n: u64, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// Generate random permutation of indices [0, n)
-    random-permutation: func(n: u64, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// Generate random boolean values with given probability
-    random-boolean: func(n: u64, probability: f64, seed: option<u64>) -> result<array, arrow-error>;
-
-    /// ========== Cumulative & Scan Operations (Phase 21.4) ==========
-
-    /// Cumulative any (logical OR)
-    cumulative-any: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Cumulative all (logical AND)
-    cumulative-all: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Cumulative count of distinct values seen so far
-    cumulative-distinct-count: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// First occurrence (1 for first time value appears, 0 otherwise)
-    first-occurrence: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Running rank (rank at each position in expanding window)
-    running-rank: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Running percentile rank
-    running-percent-rank: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Array Reduction & Aggregation (Phase 21.5) ==========
-
-    /// Product of all elements
-    product: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Index of minimum value
-    argmin: func(arr: borrow<array>) -> result<option<u64>, arrow-error>;
-
-    /// Index of maximum value
-    argmax: func(arr: borrow<array>) -> result<option<u64>, arrow-error>;
-
-    /// First non-null value
-    first-non-null: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Last non-null value
-    last-non-null: func(arr: borrow<array>) -> result<option<f64>, arrow-error>;
-
-    /// Count consecutive true values (max streak)
-    max-consecutive-true: func(arr: borrow<array>) -> result<u64, arrow-error>;
-
-    /// Count consecutive identical values (max run length)
-    max-run-length: func(arr: borrow<array>) -> result<u64, arrow-error>;
-
-    /// ========== Signal Processing Basics (Phase 21.6) ==========
-
-    /// Convolve array with kernel
-    convolve: func(arr: borrow<array>, kernel: list<f64>) -> result<array, arrow-error>;
-
-    /// Moving median (more robust than moving mean)
-    moving-median: func(arr: borrow<array>, window: u32) -> result<array, arrow-error>;
-
-    /// Savitzky-Golay smoothing filter
-    savgol-filter: func(arr: borrow<array>, window: u32, polynomial-order: u32) -> result<array, arrow-error>;
-
-    /// Detect peaks (local maxima)
-    find-peaks: func(arr: borrow<array>, min-height: option<f64>, min-distance: option<u32>) -> result<array, arrow-error>;
-
-    /// Detect valleys (local minima)
-    find-valleys: func(arr: borrow<array>, max-height: option<f64>, min-distance: option<u32>) -> result<array, arrow-error>;
-
-    /// Compute first derivative (gradient)
-    gradient: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Compute second derivative
-    second-derivative: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Zero-crossing detection
-    zero-crossings: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Cross-Tabulation & Contingency (Phase 21.7) ==========
-
-    /// Create cross-tabulation (contingency table) from two arrays
-    crosstab: func(rows: borrow<array>, cols: borrow<array>) -> result<record-batch, arrow-error>;
-
-    /// Create cross-tabulation with value aggregation
-    crosstab-agg: func(rows: borrow<array>, cols: borrow<array>, values: borrow<array>, agg: string) -> result<record-batch, arrow-error>;
-
-    /// Normalize contingency table by row (row percentages)
-    normalize-by-row: func(batch: borrow<record-batch>) -> result<record-batch, arrow-error>;
-
-    /// Normalize contingency table by column (column percentages)
-    normalize-by-column: func(batch: borrow<record-batch>) -> result<record-batch, arrow-error>;
-
-    /// Normalize contingency table by total (overall percentages)
-    normalize-by-total: func(batch: borrow<record-batch>) -> result<record-batch, arrow-error>;
-
-    /// Add row totals to contingency table
-    add-row-totals: func(batch: borrow<record-batch>) -> result<record-batch, arrow-error>;
-
-    /// Add column totals to contingency table
-    add-column-totals: func(batch: borrow<record-batch>) -> result<record-batch, arrow-error>;
-
-    /// ========== String Similarity Functions (Phase 22.1) ==========
-
-    /// Levenshtein distance between two string arrays
-    levenshtein-distance: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Normalized Levenshtein similarity (0-1, higher is more similar)
-    levenshtein-similarity: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Jaro similarity (0-1)
-    jaro-similarity: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Jaro-Winkler similarity (0-1, boosts prefix matches)
-    jaro-winkler-similarity: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Hamming distance (for equal-length strings)
-    hamming-distance: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Dice coefficient (2*|intersection|/|set1|+|set2|)
-    dice-coefficient: func(left: borrow<array>, right: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if strings are within edit distance threshold
-    within-edit-distance: func(left: borrow<array>, right: borrow<array>, max-distance: u32) -> result<array, arrow-error>;
-
-    /// ========== Data Validation (Phase 22.2) ==========
-
-    /// Check if all values are in allowed set
-    is-in-set: func(arr: borrow<array>, allowed: list<string>) -> result<array, arrow-error>;
-
-    /// Check if numeric values are in range [min, max]
-    is-in-range: func(arr: borrow<array>, min-val: f64, max-val: f64) -> result<array, arrow-error>;
-
-    /// Check if string matches regex pattern
-    matches-pattern: func(arr: borrow<array>, pattern: string) -> result<array, arrow-error>;
-
-    /// Check if string is valid email format
-    is-valid-email: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if string is valid URL format
-    is-valid-url: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Check if string is valid UUID format
-    is-valid-uuid: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    // is-valid-json already defined in Phase 17
-
-    /// Check if all values are unique (returns single boolean)
-    all-unique: func(arr: borrow<array>) -> result<bool, arrow-error>;
-
-    /// ========== Bit Manipulation (Phase 22.3) ==========
-
-    /// Count number of set bits (popcount)
-    bit-count: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Get bit at position
-    bit-get: func(arr: borrow<array>, position: u8) -> result<array, arrow-error>;
-
-    /// Set bit at position
-    bit-set: func(arr: borrow<array>, position: u8) -> result<array, arrow-error>;
-
-    /// Clear bit at position
-    bit-clear: func(arr: borrow<array>, position: u8) -> result<array, arrow-error>;
-
-    /// Toggle bit at position
-    bit-toggle: func(arr: borrow<array>, position: u8) -> result<array, arrow-error>;
-
-    // bit-reverse, leading-zeros, trailing-zeros already defined in Phase 17
-
-    /// ========== Sliding Window Statistics (Phase 22.4) ==========
-
-    /// Rolling variance
-    rolling-variance: func(arr: borrow<array>, window: u32) -> result<array, arrow-error>;
-
-    /// Rolling standard deviation
-    rolling-stddev: func(arr: borrow<array>, window: u32) -> result<array, arrow-error>;
-
-    /// Rolling skewness
-    rolling-skewness: func(arr: borrow<array>, window: u32) -> result<array, arrow-error>;
-
-    /// Rolling kurtosis
-    rolling-kurtosis: func(arr: borrow<array>, window: u32) -> result<array, arrow-error>;
-
-    /// Rolling quantile
-    rolling-quantile: func(arr: borrow<array>, window: u32, quantile: f64) -> result<array, arrow-error>;
-
-    /// Rolling correlation between two arrays
-    rolling-correlation: func(arr1: borrow<array>, arr2: borrow<array>, window: u32) -> result<array, arrow-error>;
-
-    /// Rolling covariance between two arrays
-    rolling-covariance: func(arr1: borrow<array>, arr2: borrow<array>, window: u32) -> result<array, arrow-error>;
-
-    /// ========== Array Search Operations (Phase 22.5) ==========
-
-    /// Binary search for value (returns index or -1)
-    binary-search: func(arr: borrow<array>, value: f64) -> result<s64, arrow-error>;
-
-    /// Find index of first occurrence of value
-    index-of: func(arr: borrow<array>, value: f64) -> result<option<u64>, arrow-error>;
-
-    /// Find index of last occurrence of value
-    last-index-of: func(arr: borrow<array>, value: f64) -> result<option<u64>, arrow-error>;
-
-    /// Count occurrences of value
-    count-value: func(arr: borrow<array>, value: f64) -> result<u64, arrow-error>;
-
-    /// Find indices of all occurrences of value
-    find-all: func(arr: borrow<array>, value: f64) -> result<array, arrow-error>;
-
-    /// Check if array contains value
-    contains-value: func(arr: borrow<array>, value: f64) -> result<bool, arrow-error>;
-
-    /// ========== String Array Operations (Phase 22.6) ==========
-
-    /// Find longest common prefix of all strings
-    longest-common-prefix: func(arr: borrow<array>) -> result<string, arrow-error>;
-
-    /// Find longest common suffix of all strings
-    longest-common-suffix: func(arr: borrow<array>) -> result<string, arrow-error>;
-
-    /// Get string at index (scalar extraction)
-    string-at: func(arr: borrow<array>, index: u64) -> result<option<string>, arrow-error>;
-
-    /// Sort strings naturally (numeric-aware)
-    natural-sort-indices: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract numeric part from strings
-    extract-numbers: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Extract alphabetic part from strings
-    extract-letters: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Hash Functions (Phase 22.7) ==========
-
-    /// FNV-1a hash of each value
-    fnv1a-hash: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// xxHash of each value (fast non-crypto hash)
-    xxhash: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// CRC32 of each string value
-    crc32: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Murmur hash of each value
-    murmur-hash: func(arr: borrow<array>, seed: u32) -> result<array, arrow-error>;
-
-    /// City hash of each value
-    city-hash: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Hash-based deduplication index
-    hash-dedup-indices: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Vector Distance Functions (Phase 23.1) ==========
-
-    /// Chebyshev distance (L-infinity norm)
-    chebyshev-distance: func(arr1: borrow<array>, arr2: borrow<array>) -> result<f64, arrow-error>;
-
-    /// Minkowski distance with parameter p
-    minkowski-distance: func(arr1: borrow<array>, arr2: borrow<array>, p: f64) -> result<f64, arrow-error>;
-
-    /// Cosine distance (1 - cosine_similarity)
-    cosine-distance: func(arr1: borrow<array>, arr2: borrow<array>) -> result<f64, arrow-error>;
-
-    /// ========== Data Binning & Discretization (Phase 23.2) ==========
-
-    /// Equal-width binning (fixed number of bins)
-    equal-width-bins: func(arr: borrow<array>, num-bins: u32) -> result<array, arrow-error>;
-
-    /// Equal-frequency binning (quantile-based)
-    equal-freq-bins: func(arr: borrow<array>, num-bins: u32) -> result<array, arrow-error>;
-
-    /// Custom bin edges
-    custom-bins: func(arr: borrow<array>, edges: list<f64>) -> result<array, arrow-error>;
-
-    /// Get bin edges for equal-width binning
-    get-equal-width-edges: func(arr: borrow<array>, num-bins: u32) -> result<list<f64>, arrow-error>;
-
-    /// Get bin edges for equal-frequency binning
-    get-equal-freq-edges: func(arr: borrow<array>, num-bins: u32) -> result<list<f64>, arrow-error>;
-
-    /// ========== Outlier Detection (Phase 23.3) ==========
-
-    /// Detect outliers using IQR method
-    iqr-outliers: func(arr: borrow<array>, multiplier: f64) -> result<array, arrow-error>;
-
-    /// Detect outliers using Z-score
-    zscore-outliers: func(arr: borrow<array>, threshold: f64) -> result<array, arrow-error>;
-
-    /// Detect outliers using modified Z-score (median-based)
-    modified-zscore-outliers: func(arr: borrow<array>, threshold: f64) -> result<array, arrow-error>;
-
-    /// Get IQR bounds (returns [lower, upper])
-    iqr-bounds: func(arr: borrow<array>, multiplier: f64) -> result<tuple<f64, f64>, arrow-error>;
-
-    /// Winsorize array (clip outliers to bounds)
-    winsorize: func(arr: borrow<array>, lower-percentile: f64, upper-percentile: f64) -> result<array, arrow-error>;
-
-    /// Replace outliers with specified value
-    replace-outliers: func(arr: borrow<array>, method: string, threshold: f64, replacement: f64) -> result<array, arrow-error>;
-
-    /// ========== Data Normalization & Scaling (Phase 23.4) ==========
-
-    /// Min-max scaling to [0, 1]
-    min-max-scale: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Min-max scaling to custom range
-    min-max-scale-range: func(arr: borrow<array>, min-val: f64, max-val: f64) -> result<array, arrow-error>;
-
-    /// L2 normalization (unit vector)
-    l2-normalize: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// L1 normalization (sum to 1)
-    l1-normalize: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Max-abs scaling (divide by max absolute value)
-    max-abs-scale: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Quantile transformation (uniform distribution)
-    quantile-transform: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Array Comparison Operations (Phase 23.5) ==========
-
-    /// Element-wise approximately equal (within tolerance)
-    approx-equal: func(arr1: borrow<array>, arr2: borrow<array>, tolerance: f64) -> result<array, arrow-error>;
-
-    /// Count differences between arrays
-    count-differences: func(arr1: borrow<array>, arr2: borrow<array>) -> result<u64, arrow-error>;
-
-    /// Absolute difference between arrays
-    abs-diff: func(arr1: borrow<array>, arr2: borrow<array>) -> result<array, arrow-error>;
-
-    /// Relative difference between arrays
-    relative-diff: func(arr1: borrow<array>, arr2: borrow<array>) -> result<array, arrow-error>;
-
-    /// Percent difference between arrays
-    percent-diff: func(arr1: borrow<array>, arr2: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Running Statistics (Phase 23.6) ==========
-
-    /// Running variance
-    running-variance: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Running median (computationally expensive)
-    running-median: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// ========== Array Transformation Utilities (Phase 23.7) ==========
-
-    /// Interpolate missing values linearly
-    interpolate-linear: func(arr: borrow<array>) -> result<array, arrow-error>;
-
-    /// Replace values matching condition
-    replace-where: func(arr: borrow<array>, condition: borrow<array>, replacement: f64) -> result<array, arrow-error>;
-
-    /// Clip values to range
-    clip-range: func(arr: borrow<array>, min-val: f64, max-val: f64) -> result<array, arrow-error>;
-
-    /// Smooth array using moving average
-    smooth: func(arr: borrow<array>, window: u32) -> result<array, arrow-error>;
-
-    /// Resample array to new length
-    resample: func(arr: borrow<array>, new-length: u64) -> result<array, arrow-error>;
-
-    /// Downsample by taking every nth element
-    downsample: func(arr: borrow<array>, factor: u32) -> result<array, arrow-error>;
+    /// Check if array is empty
+    is-empty: func(arr: borrow<array>) -> bool;
 }
